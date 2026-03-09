@@ -66,7 +66,11 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       if (result['success'] == true) {
-        await SessionService.saveCredentials(username: username, password: password);
+        // Credential cache: insert only if username not already stored (Android parity).
+        final hasStored = await SessionService.hasStoredCredentialsFor(username);
+        if (!hasStored) {
+          await SessionService.saveCredentials(username: username, password: password);
+        }
         if (!mounted) return;
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -78,14 +82,14 @@ class _LoginScreenState extends State<LoginScreen> {
       if (status == 'showDialog') {
         _showDeviceVerificationDialog(result['employeeid']?.toString());
       } else if (status == 'contact') {
-        setState(() {
-          _errorMessage =
-              result['message']?.toString() ?? 'Please contact administrator';
-        });
+        _showContactVerificationPopup(
+          result['message']?.toString() ?? result['data']?.toString() ?? 'Please contact administrator',
+        );
       } else {
+        // status == 'false' or error: show server data as error message
         setState(() {
-          _errorMessage = result['message']?.toString() ??
-              result['data']?.toString() ??
+          _errorMessage = result['data']?.toString() ??
+              result['message']?.toString() ??
               'Login failed. Please try again.';
         });
       }
@@ -102,8 +106,29 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  /// Non-dismissible verification popup (Android Popup_Dialog) – contact status.
+  void _showContactVerificationPopup(String message) {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Verification'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showDeviceVerificationDialog(String? employeeId) {
-    showDialog(
+    if (!mounted) return;
+    showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
@@ -156,16 +181,17 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       if (result['success']) {
+        final msg = result['message']?.toString() ?? 'Device verified successfully. Please login again.';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Device verified successfully. Please login again.'),
+          SnackBar(
+            content: Text(msg),
             backgroundColor: Colors.green,
-            duration: Duration(seconds: 3),
+            duration: const Duration(seconds: 3),
           ),
         );
       } else {
         setState(() {
-          _errorMessage = result['message'] ?? 'Verification failed';
+          _errorMessage = result['message']?.toString() ?? 'Verification failed';
         });
       }
     } finally {
@@ -314,8 +340,14 @@ class _LoginScreenState extends State<LoginScreen> {
                                   color: _primaryColor,
                                 ),
                                 onPressed: () {
+                                  final offset = _passwordController.selection.baseOffset;
                                   setState(() {
                                     _passwordVisible = !_passwordVisible;
+                                  });
+                                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                                    if (!mounted) return;
+                                    final pos = offset.clamp(0, _passwordController.text.length);
+                                    _passwordController.selection = TextSelection.collapsed(offset: pos);
                                   });
                                 },
                               ),

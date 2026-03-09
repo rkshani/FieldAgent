@@ -1,16 +1,38 @@
 # field_agents
 
-A new Flutter project.
+TCL Field Agents Flutter app – login, orders, invoices, and local data sync.
 
 ## Getting Started
 
-This project is a starting point for a Flutter application.
+### Run the app
 
-A few resources to get you started if this is your first Flutter project:
+```bash
+flutter pub get
+flutter run
+```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Select a device (e.g. Android) when prompted.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+### Login (Android parity)
+
+- **Session check on start:** If already logged in, app opens Home; otherwise Login screen.
+- **Normal login:** POST to base URL with `check_login=1`, username, password, and device params.
+- **Special path:** For `zeeshanjaved` / `123456`, request uses `check_login_for_google_test=1`.
+- **Responses:** `success` → save user + navigate Home; `contact` → verification popup; `showDialog` → new device dialog (Yes → `update_device=1`); `false` → show server `data` as error.
+- **Credential cache:** Username/password stored only when that username is not already in local cache (insert-only parity).
+
+### Change base URL
+
+Edit `lib/services/api_service.dart`:
+
+- Login/device endpoint: `loginApiUrl` (default `https://www.hisaab.org/tclorder_apis/new.php`).
+
+### Firebase Messaging (optional)
+
+To use FCM token in login (e.g. for push):
+
+1. Add `firebase_core` and `firebase_messaging` to `pubspec.yaml`.
+2. Follow [FlutterFire setup](https://firebase.flutter.dev/docs/overview).
+3. Get the token and pass it into `ApiService.login(..., fcmToken: token)`.
+
+Without Firebase, `tokenid` is sent as an empty string.

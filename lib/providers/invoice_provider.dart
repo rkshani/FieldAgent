@@ -64,6 +64,18 @@ class InvoiceProvider extends ChangeNotifier {
     }
   }
 
+  void updateItemQuantity(String itemId, int newQuantity) {
+    final index = _invoice.items.indexWhere((item) => item.id == itemId);
+    if (index != -1) {
+      final item = _invoice.items[index];
+      final updatedItem = item.copyWith(quantity: newQuantity);
+      final updatedItems = [..._invoice.items];
+      updatedItems[index] = updatedItem;
+      _invoice = _invoice.copyWith(items: updatedItems);
+      notifyListeners();
+    }
+  }
+
   void removeItem(String itemId) {
     final updatedItems = _invoice.items
         .where((item) => item.id != itemId)
@@ -93,4 +105,3 @@ class InvoiceProvider extends ChangeNotifier {
     return true;
   }
 }
-

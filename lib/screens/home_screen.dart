@@ -1,16 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
-import '../widgets/simple_card.dart';
-import 'profile_screen.dart';
-import 'settings_screen.dart';
-import 'about_screen.dart';
-import 'invoice_screen.dart';
-import 'user_verification_screen.dart';
 import 'update_db_screen.dart';
 import 'order_add_screen.dart';
 import 'login_screen.dart';
+import 'local_db_testing_screen.dart';
+import 'login_testing_screen.dart';
 import '../services/session_service.dart';
+import '../services/api_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -33,6 +29,23 @@ class _HomeScreenState extends State<HomeScreen> {
   static const Color _primaryColor = Color(0xFF2563EB);
 
   @override
+  void initState() {
+    super.initState();
+    _fetchDataAutomatically();
+  }
+
+  /// Automatically fetch local data after login (runs silently in background)
+  Future<void> _fetchDataAutomatically() async {
+    try {
+      await ApiService.fetchAndSaveLocalData();
+      // Data fetched and saved silently - Order Add screen will use it
+    } catch (e) {
+      debugPrint('Auto-fetch data error: $e');
+      // Fail silently - user can manually sync from Update DB screen if needed
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
@@ -47,7 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Text(
                   'Menu',
                   style: TextStyle(
-                    color: theme.colorScheme.onPrimary,
+                    color: Colors.white,
                     fontSize: 22,
                     fontWeight: FontWeight.w700,
                   ),
@@ -64,6 +77,40 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               },
             ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.science, color: Colors.purple),
+              title: const Text(
+                'Testing',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text('Development & Debug Tools'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.storage),
+              title: const Text('Local DB Testing'),
+              contentPadding: const EdgeInsets.only(left: 32, right: 16),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const LocalDbTestingScreen(),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.login),
+              title: const Text('Login Testing'),
+              contentPadding: const EdgeInsets.only(left: 32, right: 16),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const LoginTestingScreen()),
+                );
+              },
+            ),
+            const Divider(),
             ListTile(
               leading: const Icon(Icons.logout),
               title: const Text('Logout'),
@@ -83,23 +130,17 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: _primaryColor,
         elevation: 0,
-        title: Row(
-          children: [
-            Icon(Icons.menu, color: theme.colorScheme.onPrimary),
-            const SizedBox(width: 16),
-            Text(
-              'HOME',
-              style: TextStyle(
-                color: theme.colorScheme.onPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
+        title: Text(
+          'HOME',
+          style: TextStyle(
+            color: theme.colorScheme.onPrimary,
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         actions: [
           IconButton(
-            icon: Icon(Icons.more_vert, color: theme.colorScheme.onPrimary),
+            icon: Icon(Icons.more_vert, color: Colors.white),
             onPressed: () {},
           ),
         ],
@@ -320,15 +361,17 @@ class _HomeScreenState extends State<HomeScreen> {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () {          if (label == 'ORDER ADD') {
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const OrderAddScreen()),
-            );
+        onTap: () {
+          if (label == 'ORDER ADD') {
+            Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const OrderAddScreen()));
             return;
-          }          if (label == 'UPDATE DB') {
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const UpdateDBScreen()),
-            );
+          }
+          if (label == 'UPDATE DB') {
+            Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const UpdateDBScreen()));
             return;
           }
 
