@@ -31,6 +31,72 @@ class DraftOrderService {
 
   Future<Database> get _db async => await LocalDbService.instance.database;
 
+  Future<int?> _nextOrderSerialNo(Database db) async {
+    try {
+      final rows = await db.rawQuery(
+        'SELECT MAX(order_serial_no) AS max_no FROM draft_orders',
+      );
+      if (rows.isEmpty) return 1;
+      final raw = rows.first['max_no'];
+      int maxNo = 0;
+      if (raw is int) {
+        maxNo = raw;
+      } else if (raw is num) {
+        maxNo = raw.toInt();
+      } else if (raw != null) {
+        maxNo = int.tryParse(raw.toString()) ?? 0;
+      }
+      return maxNo + 1;
+    } catch (_) {
+      // Older database may not have order_serial_no; keep backward compatible.
+      return null;
+    }
+  }
+
+  Future<int?> _ensureOrderSerialNoForDraft(Database db, int draftId) async {
+    try {
+      final rows = await db.query(
+        'draft_orders',
+        columns: ['order_serial_no'],
+        where: 'id = ?',
+        whereArgs: [draftId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+
+      final raw = rows.first['order_serial_no'];
+      int? current;
+      if (raw is int) {
+        current = raw;
+      } else if (raw is num) {
+        current = raw.toInt();
+      } else if (raw != null) {
+        current = int.tryParse(raw.toString());
+      }
+
+      if (current != null && current > 0) {
+        return current;
+      }
+
+      final next = await _nextOrderSerialNo(db);
+      if (next == null) return null;
+
+      await db.update(
+        'draft_orders',
+        {
+          'order_serial_no': next,
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [draftId],
+      );
+      return next;
+    } catch (_) {
+      // Backward compatibility: schema may not yet include this column.
+      return null;
+    }
+  }
+
   /// Returns the current draft id (stored in SharedPreferences or first draft row).
   Future<int?> getCurrentDraftId() async {
     try {
@@ -83,7 +149,12 @@ class DraftOrderService {
   /// Loads a draft by id with items.
   Future<DraftOrderWithItems?> getDraftById(int draftId) async {
     final db = await _db;
-    final orderRows = await db.query('draft_orders', where: 'id = ?', whereArgs: [draftId]);
+    await _ensureOrderSerialNoForDraft(db, draftId);
+    final orderRows = await db.query(
+      'draft_orders',
+      where: 'id = ?',
+      whereArgs: [draftId],
+    );
     if (orderRows.isEmpty) return null;
     final order = DraftOrder.fromMap(orderRows.first);
     final itemRows = await db.query(
@@ -102,25 +173,53 @@ class DraftOrderService {
     final now = DateTime.now().toIso8601String();
     final employeeId = await SessionService.getEmployeeId();
     final localOrderId = const Uuid().v4();
-    final id = await db.insert('draft_orders', {
+    final serialNo = await _nextOrderSerialNo(db);
+
+    final payload = {
       'local_order_id': localOrderId,
+      if (serialNo != null) 'order_serial_no': serialNo,
       'status': 'draft',
       'created_at': now,
       'updated_at': now,
       'employee_id': employeeId?.toString(),
-    });
+    };
+
+    int id;
+    try {
+      id = await db.insert('draft_orders', payload);
+    } catch (_) {
+      // Fallback for very old schema where order_serial_no may still be absent.
+      payload.remove('order_serial_no');
+      id = await db.insert('draft_orders', payload);
+    }
+
     await _setCurrentDraftId(id);
     final draft = await getDraftById(id);
     return draft?.order;
   }
 
   /// Updates header fields on the current draft (party, ship-to, agency, package, payment deal, address, etc.).
-  Future<void> updateDraftHeader(int draftId, Map<String, dynamic> updates) async {
+  Future<void> updateDraftHeader(
+    int draftId,
+    Map<String, dynamic> updates,
+  ) async {
     final db = await _db;
     final allowed = {
-      'bill_to_party_id', 'party_name', 'ship_to_party_id', 'delivery_party_name',
-      'delivery_point_id', 'delivery_point_name', 'goods_agency_id', 'goods_agency_name',
-      'visit_id', 'route_id', 'package_id', 'package_name', 'payment_deal_id', 'delivery_address',
+      'bill_to_party_id',
+      'party_name',
+      'ship_to_party_id',
+      'delivery_party_name',
+      'delivery_point_id',
+      'delivery_point_name',
+      'goods_agency_id',
+      'goods_agency_name',
+      'visit_id',
+      'route_id',
+      'package_id',
+      'package_name',
+      'payment_deal_id',
+      'delivery_address',
+      'order_remarks',
     };
     final map = <String, dynamic>{};
     for (final k in updates.keys) {
@@ -171,7 +270,11 @@ class DraftOrderService {
   /// Removes a line item by id.
   Future<void> deleteLineItem(int itemId) async {
     final db = await _db;
-    final row = await db.query('draft_order_items', where: 'id = ?', whereArgs: [itemId]);
+    final row = await db.query(
+      'draft_order_items',
+      where: 'id = ?',
+      whereArgs: [itemId],
+    );
     if (row.isEmpty) return;
     final draftId = row.first['draft_order_id'] as int;
     await db.delete('draft_order_items', where: 'id = ?', whereArgs: [itemId]);
@@ -187,7 +290,11 @@ class DraftOrderService {
   Future<DraftOrderWithItems?> resetDraft(int draftId) async {
     final db = await _db;
     final now = DateTime.now().toIso8601String();
-    await db.delete('draft_order_items', where: 'draft_order_id = ?', whereArgs: [draftId]);
+    await db.delete(
+      'draft_order_items',
+      where: 'draft_order_id = ?',
+      whereArgs: [draftId],
+    );
     await db.update(
       'draft_orders',
       {
@@ -205,6 +312,7 @@ class DraftOrderService {
         'package_name': null,
         'payment_deal_id': null,
         'delivery_address': null,
+        'order_remarks': null,
         'updated_at': now,
       },
       where: 'id = ?',
@@ -224,5 +332,30 @@ class DraftOrderService {
       whereArgs: [draftId],
     );
     return getDraftById(draftId);
+  }
+
+  /// Returns all finalized orders for current user with their line items.
+  Future<List<DraftOrderWithItems>> getFinalizedOrders() async {
+    final db = await _db;
+    final employeeId = await SessionService.getEmployeeId();
+    final userId = employeeId?.toString() ?? '';
+
+    final rows = await db.query(
+      'draft_orders',
+      where: 'status = ? AND (employee_id IS NULL OR employee_id = ?)',
+      whereArgs: ['finalized', userId],
+      orderBy: 'finalized_at DESC, updated_at DESC, id DESC',
+    );
+
+    final out = <DraftOrderWithItems>[];
+    for (final row in rows) {
+      final id = row['id'] as int?;
+      if (id == null) continue;
+      final draft = await getDraftById(id);
+      if (draft != null) {
+        out.add(draft);
+      }
+    }
+    return out;
   }
 }

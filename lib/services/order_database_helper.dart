@@ -105,7 +105,7 @@ class OrderDatabaseHelper {
   static List? _findListByPreferredKeys(dynamic node, List<String> keys) {
     if (node is List) return node;
     if (node is Map) {
-      final map = node as Map;
+      final map = node;
       final keysLower = keys.map((k) => k.toLowerCase()).toSet();
 
       // First pass: direct preferred keys on this level.
@@ -118,8 +118,9 @@ class OrderDatabaseHelper {
       for (final entry in map.entries) {
         final key = entry.key?.toString() ?? '';
         final value = entry.value;
-        if (value is List && keysLower.contains(key.toLowerCase()))
+        if (value is List && keysLower.contains(key.toLowerCase())) {
           return value;
+        }
       }
 
       // Third pass: any key whose value is a non-empty list (fallback).
@@ -239,7 +240,7 @@ class OrderDatabaseHelper {
         return [Map<String, dynamic>.from(map)];
       }
       return [];
-    } catch (e, st) {
+    } catch (e) {
       debugPrint('[OrderDB] $cacheKey: error $e');
       return [];
     }
@@ -277,6 +278,31 @@ class OrderDatabaseHelper {
             )
             .toList(),
       );
+
+  /// Returns all delivery points with normalized names from local DB cache.
+  /// Used by searchable "Via Delivery Point" selector on Order Add screen.
+  Future<List<Map<String, dynamic>>> getAllDeliveryPointsName() async {
+    final rows = await getDeliveryPoints();
+    final seen = <String>{};
+    final out = <Map<String, dynamic>>[];
+
+    for (final row in rows) {
+      final name = (row['display_name']?.toString() ?? '').trim();
+      if (name.isEmpty) continue;
+      final key = '${name.toLowerCase()}|${row['store_id'] ?? row['id'] ?? ''}';
+      if (seen.contains(key)) continue;
+      seen.add(key);
+      out.add(row);
+    }
+
+    out.sort((a, b) {
+      final an = (a['display_name']?.toString() ?? '').toLowerCase();
+      final bn = (b['display_name']?.toString() ?? '').toLowerCase();
+      return an.compareTo(bn);
+    });
+    return out;
+  }
+
   Future<List<Map<String, dynamic>>> getGoodsAgencies() =>
       _listFromKey('local_goods_agency').then(
         (rows) => rows

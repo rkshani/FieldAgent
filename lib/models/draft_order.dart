@@ -2,6 +2,7 @@
 class DraftOrder {
   final int id;
   final String? localOrderId;
+  final int? orderSerialNo;
   final String? billToPartyId;
   final String? partyName;
   final String? shipToPartyId;
@@ -16,6 +17,7 @@ class DraftOrder {
   final String? packageName;
   final String? paymentDealId;
   final String? deliveryAddress;
+  final String? orderRemarks;
   final String status;
   final String? finalizedAt;
   final String createdAt;
@@ -25,6 +27,7 @@ class DraftOrder {
   const DraftOrder({
     required this.id,
     this.localOrderId,
+    this.orderSerialNo,
     this.billToPartyId,
     this.partyName,
     this.shipToPartyId,
@@ -39,6 +42,7 @@ class DraftOrder {
     this.packageName,
     this.paymentDealId,
     this.deliveryAddress,
+    this.orderRemarks,
     this.status = 'draft',
     this.finalizedAt,
     required this.createdAt,
@@ -52,6 +56,7 @@ class DraftOrder {
     return {
       'id': id,
       'local_order_id': localOrderId,
+      'order_serial_no': orderSerialNo,
       'bill_to_party_id': billToPartyId,
       'party_name': partyName,
       'ship_to_party_id': shipToPartyId,
@@ -66,6 +71,7 @@ class DraftOrder {
       'package_name': packageName,
       'payment_deal_id': paymentDealId,
       'delivery_address': deliveryAddress,
+      'order_remarks': orderRemarks,
       'status': status,
       'finalized_at': finalizedAt,
       'created_at': createdAt,
@@ -75,9 +81,20 @@ class DraftOrder {
   }
 
   static DraftOrder fromMap(Map<String, dynamic> map) {
+    final serialRaw = map['order_serial_no'];
+    int? serialNo;
+    if (serialRaw is int) {
+      serialNo = serialRaw;
+    } else if (serialRaw is num) {
+      serialNo = serialRaw.toInt();
+    } else if (serialRaw != null) {
+      serialNo = int.tryParse(serialRaw.toString());
+    }
+
     return DraftOrder(
       id: map['id'] as int,
       localOrderId: map['local_order_id'] as String?,
+      orderSerialNo: serialNo,
       billToPartyId: map['bill_to_party_id'] as String?,
       partyName: map['party_name'] as String?,
       shipToPartyId: map['ship_to_party_id'] as String?,
@@ -92,6 +109,7 @@ class DraftOrder {
       packageName: map['package_name'] as String?,
       paymentDealId: map['payment_deal_id'] as String?,
       deliveryAddress: map['delivery_address'] as String?,
+      orderRemarks: map['order_remarks'] as String?,
       status: map['status'] as String? ?? 'draft',
       finalizedAt: map['finalized_at'] as String?,
       createdAt: map['created_at'] as String,

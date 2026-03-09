@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 
 import 'update_db_screen.dart';
 import 'order_add_screen.dart';
+import 'orders_screen.dart';
 import 'login_screen.dart';
 import 'local_db_testing_screen.dart';
 import 'login_testing_screen.dart';
+import 'order_testing_screen.dart';
+import 'created_order_testing_screen.dart';
 import '../services/session_service.dart';
 import '../services/api_service.dart';
 
@@ -49,6 +52,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
+      backgroundColor: const Color(0xFFF4F7FC),
       drawer: Drawer(
         child: ListView(
           padding: EdgeInsets.zero,
@@ -110,6 +114,32 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               },
             ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add_check_circle_outlined),
+              title: const Text('Order Testing'),
+              subtitle: const Text('Delivery points from local DB'),
+              contentPadding: const EdgeInsets.only(left: 32, right: 16),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const OrderTestingScreen()),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.fact_check_outlined),
+              title: const Text('Created Order Testing'),
+              subtitle: const Text('Offline + online created orders'),
+              contentPadding: const EdgeInsets.only(left: 32, right: 16),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const CreatedOrderTestingScreen(),
+                  ),
+                );
+              },
+            ),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.logout),
@@ -129,6 +159,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       appBar: AppBar(
         backgroundColor: _primaryColor,
+        foregroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.white),
         elevation: 0,
         title: Text(
           'HOME',
@@ -146,53 +178,74 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 20),
         child: Column(
           children: [
             // Header Section
             Container(
-              color: theme.cardTheme.color ?? theme.scaffoldBackgroundColor,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF2563EB), Color(0xFF1D4ED8)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: _primaryColor.withValues(alpha: 0.22),
+                    blurRadius: 16,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
               padding: const EdgeInsets.all(16),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
                       Container(
-                        width: 80,
-                        height: 80,
+                        width: 64,
+                        height: 64,
                         decoration: BoxDecoration(
-                          color: _primaryColor,
-                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.white.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.3),
+                          ),
                         ),
-                        child: Center(
+                        child: const Center(
                           child: Text(
                             'TCL',
                             style: TextStyle(
-                              color: theme.colorScheme.onPrimary,
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 16),
-                      Expanded(
+                      const SizedBox(width: 12),
+                      const Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'TCL Order App!',
+                              'Welcome Back',
                               style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w700,
-                                color: _primaryColor,
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
-                            const SizedBox(height: 4),
+                            SizedBox(height: 2),
                             Text(
-                              'Updated: 4.24',
+                              'TCL Order App',
                               style: TextStyle(
-                                fontSize: 14,
-                                color: theme.hintColor,
+                                color: Colors.white,
+                                fontSize: 21,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
                           ],
@@ -200,16 +253,23 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Divider(color: theme.dividerColor, thickness: 1),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      _buildInfoChip('Version 4.24'),
+                      const SizedBox(width: 8),
+                      _buildInfoChip('Fast Sync Ready'),
+                    ],
+                  ),
                 ],
               ),
             ),
 
             // Menu Sections
+            const SizedBox(height: 14),
             Container(
-              color: theme.scaffoldBackgroundColor,
-              padding: const EdgeInsets.symmetric(vertical: 8),
+              color: Colors.transparent,
+              padding: const EdgeInsets.symmetric(vertical: 2),
               child: Column(
                 children: [
                   _buildSection(theme, 'ORDERS', [
@@ -267,6 +327,24 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildInfoChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
   Widget _buildSection(
     ThemeData theme,
     String title,
@@ -283,22 +361,32 @@ class _HomeScreenState extends State<HomeScreen> {
             });
           },
           child: Container(
-            color: theme.cardTheme.color ?? theme.scaffoldBackgroundColor,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Row(
                   children: [
                     Container(
-                      width: 8,
-                      height: 24,
+                      width: 9,
+                      height: 26,
                       decoration: BoxDecoration(
                         color: sectionColor,
-                        borderRadius: BorderRadius.circular(2),
+                        borderRadius: BorderRadius.circular(3),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Text(
                       title,
                       style: TextStyle(
@@ -311,8 +399,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 Icon(
                   _expandedSections[title]!
-                      ? Icons.expand_less
-                      : Icons.expand_more,
+                      ? Icons.keyboard_arrow_up
+                      : Icons.keyboard_arrow_down,
                   color: theme.colorScheme.onSurface,
                   size: 24,
                 ),
@@ -320,19 +408,29 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-        Divider(color: theme.dividerColor, thickness: 1, height: 0),
 
         // Section Content
         if (_expandedSections[title]!)
           Container(
-            color: theme.cardTheme.color ?? theme.scaffoldBackgroundColor,
-            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(top: 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            padding: const EdgeInsets.all(10),
             child: GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 2,
-                childAspectRatio: 1.4,
+                childAspectRatio: 1.55,
                 crossAxisSpacing: 8,
                 mainAxisSpacing: 8,
               ),
@@ -348,7 +446,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
       ],
     );
   }
@@ -374,6 +472,12 @@ class _HomeScreenState extends State<HomeScreen> {
             ).push(MaterialPageRoute(builder: (_) => const UpdateDBScreen()));
             return;
           }
+          if (label == 'MY ORDERS') {
+            Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => const OrdersScreen()));
+            return;
+          }
 
           ScaffoldMessenger.of(
             context,
@@ -382,15 +486,15 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.circular(8),
         child: Container(
           decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.1),
+            color: color.withValues(alpha: 0.08),
             border: Border.all(color: color.withValues(alpha: 0.3)),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(10),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, color: color, size: 28),
-              const SizedBox(height: 6),
+              Icon(icon, color: color, size: 24),
+              const SizedBox(height: 5),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
@@ -401,7 +505,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
-                    color: Colors.grey[800],
+                    color: const Color(0xFF1F2937),
                   ),
                 ),
               ),

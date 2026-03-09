@@ -24,7 +24,7 @@ class LocalDbService {
 
     return openDatabase(
       path,
-      version: 2,
+      version: 4,
       onCreate: (db, version) async {
         await _createLocalApiCache(db);
         await _createDraftTables(db);
@@ -32,6 +32,12 @@ class LocalDbService {
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           await _createDraftTables(db);
+        }
+        if (oldVersion < 3) {
+          await _addOrderSerialNoColumnIfNeeded(db);
+        }
+        if (oldVersion < 4) {
+          await _addOrderRemarksColumnIfNeeded(db);
         }
       },
     );
@@ -52,6 +58,7 @@ class LocalDbService {
       CREATE TABLE IF NOT EXISTS draft_orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         local_order_id TEXT UNIQUE,
+        order_serial_no INTEGER,
         bill_to_party_id TEXT,
         party_name TEXT,
         ship_to_party_id TEXT,
@@ -66,6 +73,7 @@ class LocalDbService {
         package_name TEXT,
         payment_deal_id TEXT,
         delivery_address TEXT,
+        order_remarks TEXT,
         status TEXT NOT NULL DEFAULT 'draft',
         finalized_at TEXT,
         created_at TEXT NOT NULL,
@@ -73,6 +81,8 @@ class LocalDbService {
         employee_id TEXT
       )
     ''');
+    await _addOrderSerialNoColumnIfNeeded(db);
+    await _addOrderRemarksColumnIfNeeded(db);
     await db.execute('''
       CREATE TABLE IF NOT EXISTS draft_order_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,20 +100,36 @@ class LocalDbService {
     ''');
   }
 
+  static Future<void> _addOrderSerialNoColumnIfNeeded(Database db) async {
+    try {
+      await db.execute(
+        'ALTER TABLE draft_orders ADD COLUMN order_serial_no INTEGER',
+      );
+    } catch (_) {
+      // Column already exists or table doesn't exist yet; safe to ignore.
+    }
+  }
+
+  static Future<void> _addOrderRemarksColumnIfNeeded(Database db) async {
+    try {
+      await db.execute(
+        'ALTER TABLE draft_orders ADD COLUMN order_remarks TEXT',
+      );
+    } catch (_) {
+      // Column already exists or table doesn't exist yet; safe to ignore.
+    }
+  }
+
   Future<void> saveLocalData({
     required String cacheKey,
     required String payload,
   }) async {
     final db = await database;
-    await db.insert(
-      'local_api_cache',
-      {
-        'cache_key': cacheKey,
-        'payload': payload,
-        'updated_at': DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('local_api_cache', {
+      'cache_key': cacheKey,
+      'payload': payload,
+      'updated_at': DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   /// Returns stored JSON payload for a cache key, or null if not found.
@@ -117,5 +143,19 @@ class LocalDbService {
     );
     if (rows.isEmpty) return null;
     return rows.first['payload'] as String?;
+  }
+
+  /// Returns the full cache row for diagnostics, or null if missing.
+  Future<Map<String, dynamic>?> getCacheRow(String cacheKey) async {
+    final db = await database;
+    final rows = await db.query(
+      'local_api_cache',
+      columns: ['cache_key', 'payload', 'updated_at'],
+      where: 'cache_key = ?',
+      whereArgs: [cacheKey],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Map<String, dynamic>.from(rows.first);
   }
 }

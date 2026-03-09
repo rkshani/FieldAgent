@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../providers/draft_order_provider.dart';
 import '../providers/invoice_provider.dart';
 import '../models/invoice_item.dart';
 import '../models/payment_method.dart';
@@ -59,6 +60,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   bool _savingDraft = false;
   bool _loadingDraft = false;
   bool _loadingPartyDependencies = false;
+  bool _isExitingScreen = false;
   String? _errorMessage;
 
   // Master/local reference data
@@ -77,6 +79,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   VisitRouteData? _selectedRouteData;
 
   int? _selectedPartyIndex;
+  int? _selectedShipToOptionIndex;
   int? _selectedItemIndex;
   int? _selectedPackageIndex;
   int? _selectedDeliveryPointIndex;
@@ -85,11 +88,20 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
   // Current draft/order state
   int? _currentDraftId;
+  int? _currentOrderSerialNo;
   String? _currentLocalOrderId;
   String? _selectedPaymentDealId;
 
   String _userId = '';
   int? _currentUserId; // numeric user ID for eligibility checks
+
+  static const String _shipToDirect = 'direct';
+  static const String _shipToUnavailable = 'unavailable';
+  static const String _shipToParty = 'party';
+
+  String? _selectedShipToPartyId;
+  String? _selectedShipToPartyName;
+  bool _showManualDeliveryAddressField = false;
 
   @override
   void initState() {
@@ -125,10 +137,13 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       _selectedParty?['partyid']?.toString().trim() ?? '';
 
   String get _currentOrderIdForDisplay {
+    if (_currentOrderSerialNo != null) {
+      return _currentOrderSerialNo.toString();
+    }
+    if (_currentDraftId != null) return _currentDraftId.toString();
     if (_currentLocalOrderId != null && _currentLocalOrderId!.isNotEmpty) {
       return _currentLocalOrderId!;
     }
-    if (_currentDraftId != null) return _currentDraftId.toString();
     return 'NEW';
   }
 
@@ -147,6 +162,191 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     return '';
   }
 
+  AgentApprovedVisit? get _selectedApprovedVisit {
+    if (_selectedVisitIndex == null) return null;
+    if (_selectedVisitIndex! < 0 ||
+        _selectedVisitIndex! >= _approvedVisits.length) {
+      return null;
+    }
+    return _approvedVisits[_selectedVisitIndex!];
+  }
+
+  String _visitRouteLabel(AgentApprovedVisit visit) {
+    final route = visit.routes?.trim() ?? '';
+    final visitId = (visit.visitId ?? '').trim();
+    final cityId = (visit.cityIds ?? '').trim();
+    if (route.isNotEmpty && visitId.isNotEmpty && cityId.isNotEmpty) {
+      return '$route (Visit ID: $visitId, City: $cityId)';
+    }
+    if (route.isNotEmpty && visitId.isNotEmpty) {
+      return '$route (Visit ID: $visitId)';
+    }
+    if (route.isNotEmpty) return route;
+    return 'Visit ${visitId.isEmpty ? '-' : visitId}'.trim();
+  }
+
+  bool get _isShipToSelected =>
+      (_selectedShipToPartyId ?? '').trim().isNotEmpty;
+
+  String get _shipToDisplayLabel {
+    final name = (_selectedShipToPartyName ?? '').trim();
+    final id = (_selectedShipToPartyId ?? '').trim();
+    if (name.isEmpty) return 'Select Ship To / Delivery Party';
+    if (id.isEmpty) return name;
+    return '$name _ $id';
+  }
+
+  List<Map<String, dynamic>> _buildShipToOptions() {
+    final options = <Map<String, dynamic>>[
+      {
+        'type': _shipToDirect,
+        'ship_to_party_id': '0',
+        'delivery_party_name': 'Direct to Party',
+        'display': 'Direct to Party _ 0',
+      },
+      {
+        'type': _shipToUnavailable,
+        'ship_to_party_id': '0',
+        'delivery_party_name': 'Unavailable Party',
+        'display': 'Unavailable Party _ 0',
+      },
+    ];
+
+    for (final party in _parties) {
+      final partyId =
+          party['partyid']?.toString().trim() ??
+          party['id']?.toString().trim() ??
+          '';
+      final partyName = partyDisplay(party).trim();
+      if (partyId.isEmpty || partyName.isEmpty) continue;
+      options.add({
+        'type': _shipToParty,
+        'ship_to_party_id': partyId,
+        'delivery_party_name': partyName,
+        'display': '$partyName _ $partyId',
+      });
+    }
+
+    return options;
+  }
+
+  Future<void> _pickShipToDeliveryAddress() async {
+    final options = _buildShipToOptions();
+    final selected = await _showSearchSelectionDialog(
+      title: 'Select Ship To / Delivery Address',
+      rows: options,
+      selectedIndex: _selectedShipToOptionIndex,
+      labelBuilder: (row) => row['display']?.toString() ?? '',
+      searchTextBuilder: (row) => row['display']?.toString() ?? '',
+    );
+
+    if (!mounted || selected == null) return;
+    await _onShipToSelected(selected, options[selected]);
+  }
+
+  Future<void> _onShipToSelected(int index, Map<String, dynamic> option) async {
+    final type = option['type']?.toString() ?? _shipToParty;
+    final shipToId = option['ship_to_party_id']?.toString().trim() ?? '';
+    final shipToName = option['delivery_party_name']?.toString().trim() ?? '';
+    final shipToChanged =
+        (_selectedShipToPartyId ?? '').trim() != shipToId ||
+        (_selectedShipToPartyName ?? '').trim() != shipToName;
+
+    setState(() {
+      _selectedShipToOptionIndex = index;
+      _selectedShipToPartyId = shipToId;
+      _selectedShipToPartyName = shipToName;
+
+      if (shipToChanged) {
+        _selectedPackageIndex = null;
+      }
+
+      if (type == _shipToUnavailable) {
+        _showManualDeliveryAddressField = true;
+      } else {
+        _showManualDeliveryAddressField = false;
+        _deliveryAddressController.clear();
+      }
+    });
+
+    DraftOrderProvider? draftProvider;
+    try {
+      draftProvider = Provider.of<DraftOrderProvider>(context, listen: false);
+    } catch (_) {
+      draftProvider = null;
+    }
+
+    if (draftProvider != null) {
+      await draftProvider.updateShipTo(
+        shipToId.isEmpty ? null : shipToId,
+        shipToName.isEmpty ? null : shipToName,
+      );
+    }
+
+    await _saveDraft();
+  }
+
+  String _deliveryPointIdFromMap(Map<String, dynamic> point) {
+    return point['store_id']?.toString().trim() ??
+        point['storeid']?.toString().trim() ??
+        point['delivery_point_id']?.toString().trim() ??
+        point['id']?.toString().trim() ??
+        '';
+  }
+
+  String _deliveryPointNameFromMap(Map<String, dynamic> point) {
+    return point['store_name']?.toString().trim() ??
+        point['storename']?.toString().trim() ??
+        point['name']?.toString().trim() ??
+        point['display_name']?.toString().trim() ??
+        '';
+  }
+
+  String _deliveryPointLocationFromMap(Map<String, dynamic> point) {
+    return point['location']?.toString().trim() ??
+        point['address']?.toString().trim() ??
+        point['city']?.toString().trim() ??
+        '';
+  }
+
+  Future<void> _onDeliveryPointSelected(
+    int? index, {
+    bool persistDraft = true,
+  }) async {
+    if (index == null || index < 0 || index >= _deliveryPoints.length) return;
+
+    final point = _deliveryPoints[index];
+    final deliveryPointId = _deliveryPointIdFromMap(point);
+    final deliveryPointName = _deliveryPointNameFromMap(point);
+    final location = _deliveryPointLocationFromMap(point);
+
+    setState(() {
+      _selectedDeliveryPointIndex = index;
+      if (!_showManualDeliveryAddressField && location.isNotEmpty) {
+        _deliveryAddressController.text = location;
+      }
+    });
+
+    DraftOrderProvider? draftProvider;
+    try {
+      draftProvider = Provider.of<DraftOrderProvider>(context, listen: false);
+    } catch (_) {
+      draftProvider = null;
+    }
+
+    if (draftProvider != null) {
+      await draftProvider.updateDeliveryPoint(
+        deliveryPointId.isEmpty ? null : deliveryPointId,
+        deliveryPointName.isEmpty ? null : deliveryPointName,
+      );
+    }
+
+    _recalculateTotals();
+    if (persistDraft) {
+      await _saveDraft();
+    }
+  }
+
   Future<void> _loadUserId() async {
     final userId = await SessionService.getUserId();
     final username = await SessionService.getSavedUsername();
@@ -162,15 +362,63 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
   Future<void> _loadApprovedVisits() async {
     try {
-      final visits = await VisitService.instance.getCachedApprovedVisits();
+      debugPrint('[OrderAdd] loading approved visits...');
+      final visits = await VisitService.instance.getApprovedVisits(
+        preferRemote: true,
+      );
       if (mounted) {
         setState(() {
           _approvedVisits = visits;
         });
+
+        debugPrint(
+          '[OrderAdd] approved visits loaded=${_approvedVisits.length}',
+        );
+        if (_approvedVisits.isNotEmpty) {
+          final first = _approvedVisits.first;
+          debugPrint(
+            '[OrderAdd] first visit visitId=${first.visitId} routeId=${first.routeId} cityIds=${first.cityIds} route=${first.routes}',
+          );
+        }
+
+        if (_currentDraftId != null && _approvedVisits.isNotEmpty) {
+          final draft = await DraftOrderService.instance.getCurrentDraft();
+          final visitId = draft?.order.visitId?.trim() ?? '';
+          if (visitId.isNotEmpty) {
+            final idx = _approvedVisits.indexWhere(
+              (v) => (v.visitId ?? '').trim() == visitId,
+            );
+            if (idx != -1 && mounted) {
+              setState(() {
+                _selectedVisitIndex = idx;
+              });
+              await _syncVisitedPartiesForSelectedVisit();
+            }
+          }
+        }
       }
     } catch (e) {
       debugPrint('[OrderAdd] Failed to load approved visits: $e');
     }
+  }
+
+  Future<void> _syncVisitedPartiesForSelectedVisit() async {
+    final selectedVisit = _selectedApprovedVisit;
+    if (selectedVisit == null) return;
+    final visitId = (selectedVisit.visitId ?? '').trim();
+    final routeId = (selectedVisit.routeId ?? '').trim();
+    final cityId = (selectedVisit.cityIds ?? '').trim();
+    debugPrint(
+      '[OrderAdd] sync visited parties visitId=$visitId routeId=$routeId cityId=$cityId',
+    );
+    if (visitId.isEmpty || routeId.isEmpty) return;
+
+    final parties = await VisitService.instance.fetchAndSaveVisitedParties(
+      visitId: visitId,
+      routeId: routeId,
+      cityId: cityId,
+    );
+    debugPrint('[OrderAdd] visited parties synced count=${parties.length}');
   }
 
   Future<void> _loadPackageDetails() async {
@@ -240,7 +488,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       partyId: selectedPartyId,
     );
 
-    final deliveryPoints = await helper.getDeliveryPoints();
+    final deliveryPoints = await helper.getAllDeliveryPointsName();
     final agencies = await helper.getGoodsAgencies();
     final storeData = await helper.getStoreData();
     final visits = _extractVisits(storeData);
@@ -269,12 +517,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         _deliveryPoints = deliveryPoints;
         _agencies = agencies;
         _visits = visits;
-        if (_parties.isNotEmpty && _selectedPartyIndex == null) {
-          _selectedPartyIndex = 0;
-        }
       });
 
-      if (_selectedPartyIndex != null && _parties.isNotEmpty) {
+      if (_selectedPartyIndex != null &&
+          _selectedPartyIndex! < _parties.length &&
+          _parties.isNotEmpty) {
         await _onPartySelected(_selectedPartyIndex!, persistDraft: false);
       }
 
@@ -353,6 +600,12 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     if (mounted) {
       setState(() {
         _selectedPartyIndex = index;
+        // Keep package flow smooth: default ship-to as Direct to Party on party change.
+        _selectedShipToOptionIndex = 0;
+        _selectedShipToPartyId = '0';
+        _selectedShipToPartyName = 'Direct to Party';
+        _showManualDeliveryAddressField = false;
+        _selectedPackageIndex = null;
       });
     }
 
@@ -360,6 +613,16 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     _deliveryAddressController.text = address is String ? address : '';
     _clearSelectedItemSelection();
     _selectedPaymentDealId = null;
+
+    DraftOrderProvider? draftProvider;
+    try {
+      draftProvider = Provider.of<DraftOrderProvider>(context, listen: false);
+    } catch (_) {
+      draftProvider = null;
+    }
+    if (draftProvider != null) {
+      await draftProvider.updateShipTo('0', 'Direct to Party');
+    }
 
     await _reloadPartyDependentData();
     _recalculateTotals();
@@ -488,6 +751,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     required int? selectedIndex,
     required String Function(Map<String, dynamic> row) labelBuilder,
     String Function(Map<String, dynamic> row)? searchTextBuilder,
+    String? defaultOptionLabel,
   }) async {
     if (rows.isEmpty) return null;
 
@@ -561,13 +825,39 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     ),
                     const SizedBox(height: 12),
                     Flexible(
-                      child: filteredIndices.isEmpty
+                      child:
+                          (filteredIndices.isEmpty &&
+                              (defaultOptionLabel == null ||
+                                  defaultOptionLabel.trim().isEmpty))
                           ? const Center(child: Text('No results found'))
                           : ListView.builder(
                               shrinkWrap: true,
-                              itemCount: filteredIndices.length,
+                              itemCount:
+                                  filteredIndices.length +
+                                  ((defaultOptionLabel != null &&
+                                          defaultOptionLabel.trim().isNotEmpty)
+                                      ? 1
+                                      : 0),
                               itemBuilder: (context, i) {
-                                final originalIndex = filteredIndices[i];
+                                final hasDefaultOption =
+                                    defaultOptionLabel != null &&
+                                    defaultOptionLabel.trim().isNotEmpty;
+
+                                if (hasDefaultOption && i == 0) {
+                                  final defaultSelected = selectedIndex == null;
+                                  return ListTile(
+                                    dense: true,
+                                    title: Text(defaultOptionLabel),
+                                    trailing: defaultSelected
+                                        ? const Icon(Icons.check)
+                                        : null,
+                                    onTap: () => Navigator.pop(ctx, -1),
+                                  );
+                                }
+
+                                final listIndex = hasDefaultOption ? i - 1 : i;
+                                final originalIndex =
+                                    filteredIndices[listIndex];
                                 final row = rows[originalIndex];
                                 final selected = selectedIndex == originalIndex;
 
@@ -730,7 +1020,6 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       } else {
         _selectedItemPrice = 'Rs. ${price.toStringAsFixed(2)}';
       }
-      _specialPriceController.text = price.toString();
     });
   }
 
@@ -746,6 +1035,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       rows: _parties,
       selectedIndex: _selectedPartyIndex,
       labelBuilder: partyDisplay,
+      defaultOptionLabel: 'Select Party',
       searchTextBuilder: (row) {
         final name = partyDisplay(row);
         final address = row['address']?.toString() ?? '';
@@ -753,6 +1043,29 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       },
     );
     if (!mounted || selected == null) return;
+    if (selected == -1) {
+      setState(() {
+        _selectedPartyIndex = null;
+        _selectedShipToOptionIndex = null;
+        _selectedShipToPartyId = null;
+        _selectedShipToPartyName = null;
+        _showManualDeliveryAddressField = false;
+        _selectedPackageIndex = null;
+        _selectedAgencyIndex = null;
+      });
+      _deliveryAddressController.clear();
+      _clearSelectedItemSelection();
+      _selectedPaymentDealId = null;
+      _paymentMethods = [];
+      _alreadyAddedItems = [];
+      _packages = _filterPackagesForParty(
+        allPackages: _allPackages,
+        partyId: '',
+      );
+      _recalculateTotals();
+      await _saveDraft(syncItems: true);
+      return;
+    }
     await _onPartySelected(selected);
   }
 
@@ -779,6 +1092,12 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   }
 
   Future<void> _pickPackage() async {
+    if (!_isShipToSelected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select Ship To first.')),
+      );
+      return;
+    }
     if (_packages.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -792,14 +1111,101 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       rows: _packages,
       selectedIndex: _selectedPackageIndex,
       labelBuilder: packageDisplay,
+      defaultOptionLabel: 'Select Package',
       searchTextBuilder: (row) =>
           row['name']?.toString() ?? row['package_title']?.toString() ?? '',
     );
     if (!mounted || selected == null) return;
+    if (selected == -1) {
+      setState(() {
+        _selectedPackageIndex = null;
+        _clearSelectedItemSelection();
+        _itemPackagePrices.clear();
+        _itemDiscounts.clear();
+      });
+      _recalculateTotals();
+      await _saveDraft();
+      return;
+    }
     await _onPackageSelected(selected);
   }
 
   Future<void> _pickDeliveryPoint() async {
+    final helper = OrderDatabaseHelper.instance;
+    final directDeliveryPoints = await helper.getDeliveryPoints();
+    final storeData = await helper.getStoreData();
+
+    final mergedDeliveryPoints = <Map<String, dynamic>>[];
+    final seen = <String>{};
+
+    void addDeliveryPoint(Map<String, dynamic> raw) {
+      final normalized = OrderDataNormalizer.normalizeDeliveryPoint(
+        Map<String, dynamic>.from(raw),
+      );
+      final id = _deliveryPointIdFromMap(normalized);
+      final name = _deliveryPointNameFromMap(normalized);
+      if (name.isEmpty) return;
+
+      final key = '${id.toLowerCase()}|${name.toLowerCase()}';
+      if (seen.contains(key)) return;
+      seen.add(key);
+
+      normalized['store_id'] = id;
+      normalized['store_name'] = name;
+      normalized['display_name'] = name;
+      mergedDeliveryPoints.add(normalized);
+    }
+
+    for (final row in directDeliveryPoints) {
+      addDeliveryPoint(row);
+    }
+
+    for (final row in storeData) {
+      if (row['stores'] is List) {
+        final stores = row['stores'] as List;
+        for (final store in stores) {
+          if (store is Map) {
+            addDeliveryPoint(Map<String, dynamic>.from(store));
+          }
+        }
+      }
+      addDeliveryPoint(row);
+    }
+
+    mergedDeliveryPoints.sort((a, b) {
+      final an = _deliveryPointNameFromMap(a).toLowerCase();
+      final bn = _deliveryPointNameFromMap(b).toLowerCase();
+      return an.compareTo(bn);
+    });
+
+    if (mergedDeliveryPoints.isNotEmpty) {
+      final selectedId =
+          (_selectedDeliveryPointIndex != null &&
+              _selectedDeliveryPointIndex! >= 0 &&
+              _selectedDeliveryPointIndex! < _deliveryPoints.length)
+          ? _deliveryPointIdFromMap(
+              _deliveryPoints[_selectedDeliveryPointIndex!],
+            )
+          : '';
+
+      int? refreshedSelectedIndex;
+      if (selectedId.isNotEmpty) {
+        final idx = mergedDeliveryPoints.indexWhere(
+          (d) => _deliveryPointIdFromMap(d) == selectedId,
+        );
+        if (idx != -1) {
+          refreshedSelectedIndex = idx;
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _deliveryPoints = mergedDeliveryPoints;
+          _selectedDeliveryPointIndex = refreshedSelectedIndex;
+        });
+      }
+    }
+
     if (_deliveryPoints.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -809,32 +1215,15 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       return;
     }
     final selected = await _showSearchSelectionDialog(
-      title: 'Select Delivery Address',
+      title: 'Select Via Delivery Point',
       rows: _deliveryPoints,
       selectedIndex: _selectedDeliveryPointIndex,
-      labelBuilder: (row) =>
-          row['address']?.toString() ??
-          row['name']?.toString() ??
-          row['location']?.toString() ??
-          '',
+      labelBuilder: (row) => _deliveryPointNameFromMap(row),
       searchTextBuilder: (row) =>
-          row['address']?.toString() ??
-          row['name']?.toString() ??
-          row['location']?.toString() ??
-          '',
+          '${_deliveryPointNameFromMap(row)} ${_deliveryPointLocationFromMap(row)}',
     );
     if (!mounted || selected == null) return;
-    setState(() {
-      _selectedDeliveryPointIndex = selected;
-      final point = _deliveryPoints[selected];
-      _deliveryAddressController.text =
-          point['address']?.toString() ??
-          point['name']?.toString() ??
-          point['location']?.toString() ??
-          '';
-    });
-    _recalculateTotals();
-    await _saveDraft(syncItems: true);
+    await _onDeliveryPointSelected(selected, persistDraft: true);
   }
 
   Future<void> _onPackageSelected(
@@ -926,6 +1315,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       if (draft == null) return;
 
       _currentDraftId = draft.order.id;
+      _currentOrderSerialNo = draft.order.orderSerialNo;
       _currentLocalOrderId = draft.order.localOrderId;
 
       final provider = context.read<InvoiceProvider>();
@@ -986,6 +1376,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       if (draftDeliveryPointId.isNotEmpty) {
         final dpIndex = _deliveryPoints.indexWhere(
           (d) =>
+              d['store_id']?.toString().trim() == draftDeliveryPointId ||
               d['delivery_point_id']?.toString().trim() ==
                   draftDeliveryPointId ||
               d['id']?.toString().trim() == draftDeliveryPointId,
@@ -995,7 +1386,40 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         }
       }
 
+      final shipToPartyId = draft.order.shipToPartyId?.trim() ?? '';
+      final deliveryPartyName = draft.order.deliveryPartyName?.trim() ?? '';
+      if (shipToPartyId.isNotEmpty || deliveryPartyName.isNotEmpty) {
+        _selectedShipToPartyId = shipToPartyId;
+        _selectedShipToPartyName = deliveryPartyName;
+        _showManualDeliveryAddressField =
+            deliveryPartyName.toLowerCase() == 'unavailable party';
+
+        final options = _buildShipToOptions();
+        final idx = options.indexWhere(
+          (o) =>
+              (o['ship_to_party_id']?.toString().trim() ?? '') ==
+                  shipToPartyId &&
+              (o['delivery_party_name']?.toString().trim().toLowerCase() ??
+                      '') ==
+                  deliveryPartyName.toLowerCase(),
+        );
+        if (idx != -1) {
+          _selectedShipToOptionIndex = idx;
+        }
+      }
+
+      final draftVisitId = draft.order.visitId?.trim() ?? '';
+      if (draftVisitId.isNotEmpty) {
+        final visitIndex = _approvedVisits.indexWhere(
+          (v) => (v.visitId ?? '').trim() == draftVisitId,
+        );
+        if (visitIndex != -1) {
+          _selectedVisitIndex = visitIndex;
+        }
+      }
+
       _selectedPaymentDealId = draft.order.paymentDealId?.trim();
+      _specialRemarksController.text = draft.order.orderRemarks?.trim() ?? '';
       if ((draft.order.deliveryAddress ?? '').trim().isNotEmpty) {
         _deliveryAddressController.text = draft.order.deliveryAddress!.trim();
       }
@@ -1025,13 +1449,16 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         ? _deliveryPoints[_selectedDeliveryPointIndex!]
         : null;
     final visit =
-        _selectedVisitIndex != null && _selectedVisitIndex! < _visits.length
-        ? _visits[_selectedVisitIndex!]
+        _selectedVisitIndex != null &&
+            _selectedVisitIndex! < _approvedVisits.length
+        ? _approvedVisits[_selectedVisitIndex!]
         : null;
 
     return {
       'bill_to_party_id': party?['partyid']?.toString(),
       'party_name': party != null ? partyDisplay(party) : null,
+      'ship_to_party_id': _selectedShipToPartyId,
+      'delivery_party_name': _selectedShipToPartyName,
       'package_id':
           package?['packageid']?.toString() ?? package?['id']?.toString(),
       'package_name': package != null ? packageDisplay(package) : null,
@@ -1042,16 +1469,64 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       'goods_agency_name': goodsAgency != null
           ? agencyDisplay(goodsAgency)
           : null,
-      'delivery_point_id':
-          deliveryPoint?['delivery_point_id']?.toString() ??
-          deliveryPoint?['id']?.toString(),
-      'delivery_point_name': deliveryPoint != null
-          ? deliveryPointDisplay(deliveryPoint)
+      'delivery_point_id': deliveryPoint != null
+          ? _deliveryPointIdFromMap(deliveryPoint)
           : null,
-      'visit_id': visit?['visit_id']?.toString(),
-      'route_id': _selectedRouteData?.routeId,
+      'delivery_point_name': deliveryPoint != null
+          ? _deliveryPointNameFromMap(deliveryPoint)
+          : null,
+      'visit_id': visit?.visitId,
+      'route_id': visit?.routeId,
       'delivery_address': _deliveryAddressController.text.trim(),
+      'order_remarks': _specialRemarksController.text.trim(),
     };
+  }
+
+  Future<void> _showOrderRemarksDialog() async {
+    final remarksController = TextEditingController(
+      text: _specialRemarksController.text,
+    );
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Order Remarks'),
+          content: TextField(
+            controller: remarksController,
+            minLines: 3,
+            maxLines: 5,
+            decoration: const InputDecoration(
+              hintText: 'Write remarks for this order',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(null),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(''),
+              child: const Text('Clear'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(remarksController.text.trim()),
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted || result == null) return;
+
+    setState(() {
+      _specialRemarksController.text = result;
+    });
+    await _saveDraft(syncItems: false);
   }
 
   Future<void> _saveDraft({bool syncItems = false}) async {
@@ -1062,6 +1537,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       if (current == null) return;
 
       _currentDraftId = current.order.id;
+      _currentOrderSerialNo = current.order.orderSerialNo;
       _currentLocalOrderId = current.order.localOrderId;
 
       final header = _buildCurrentDraftOrder();
@@ -1096,6 +1572,74 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       debugPrint('[OrderAdd] Failed to save draft: $e');
     } finally {
       _savingDraft = false;
+    }
+  }
+
+  Future<void> _resetWholeOrderScreen({bool showSnackBar = true}) async {
+    try {
+      context.read<InvoiceProvider>().reset();
+
+      final current = await DraftOrderService.instance.getCurrentDraft();
+      if (current != null) {
+        await DraftOrderService.instance.resetDraft(current.order.id);
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        _selectedVisitIndex = null;
+        _selectedPartyIndex = null;
+        _selectedShipToOptionIndex = null;
+        _selectedShipToPartyId = null;
+        _selectedShipToPartyName = null;
+        _showManualDeliveryAddressField = false;
+
+        _selectedItemIndex = null;
+        _selectedPackageIndex = null;
+        _selectedDeliveryPointIndex = null;
+        _selectedAgencyIndex = null;
+
+        _selectedPaymentDealId = null;
+        _selectedItemPrice = '';
+        _paymentMethods = [];
+        _alreadyAddedItems = [];
+
+        _itemPackagePrices.clear();
+        _itemDiscounts.clear();
+        _packages = _filterPackagesForParty(
+          allPackages: _allPackages,
+          partyId: '',
+        );
+      });
+
+      _qtyController.clear();
+      _specialRemarksController.clear();
+      _specialPriceController.clear();
+      _deliveryAddressController.clear();
+
+      _recalculateTotals();
+      await _saveDraft(syncItems: true);
+
+      if (!mounted || !showSnackBar) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Order screen reset')));
+    } catch (e) {
+      if (!mounted || !showSnackBar) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Reset failed: $e')));
+    }
+  }
+
+  Future<bool> _handleBackNavigation() async {
+    if (_isExitingScreen) return true;
+    _isExitingScreen = true;
+    try {
+      await _resetWholeOrderScreen(showSnackBar: false);
+      return true;
+    } finally {
+      _isExitingScreen = false;
     }
   }
 
@@ -1582,6 +2126,16 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       return;
     }
 
+    // Validation: ship-to selection
+    if (!_isShipToSelected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select Ship To before finalizing'),
+        ),
+      );
+      return;
+    }
+
     // Validation: package selection
     if (_selectedPackageIndex == null ||
         _selectedPackageIndex! >= _packages.length) {
@@ -1591,7 +2145,68 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       return;
     }
 
-    await _saveDraft();
+    // Validation: via / delivery point selection
+    if (_selectedDeliveryPointIndex == null ||
+        _selectedDeliveryPointIndex! < 0 ||
+        _selectedDeliveryPointIndex! >= _deliveryPoints.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select Via / Delivery Point before finalizing'),
+        ),
+      );
+      return;
+    }
+
+    // Validation: remarks required for unavailable party flow
+    if (_showManualDeliveryAddressField &&
+        _deliveryAddressController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter Delivery Address / Remarks'),
+        ),
+      );
+      return;
+    }
+
+    // Validation: visit selection
+    if (_selectedVisitIndex == null ||
+        _selectedVisitIndex! < 0 ||
+        _selectedVisitIndex! >= _approvedVisits.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a visit before finalizing'),
+        ),
+      );
+      return;
+    }
+
+    await _saveDraft(syncItems: true);
+
+    if (_currentDraftId == null) {
+      final current = await DraftOrderService.instance.getCurrentDraft();
+      _currentDraftId = current?.order.id;
+      _currentOrderSerialNo = current?.order.orderSerialNo;
+      _currentLocalOrderId = current?.order.localOrderId;
+    }
+
+    if (_currentDraftId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not prepare local order record.')),
+      );
+      return;
+    }
+
+    final finalizedLocalDraft = await DraftOrderService.instance.finalizeDraft(
+      _currentDraftId!,
+    );
+    if (finalizedLocalDraft == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to save finalized order locally.'),
+        ),
+      );
+      return;
+    }
 
     final selectedParty = _parties[_selectedPartyIndex!];
     final selectedPackage = _packages[_selectedPackageIndex!];
@@ -1637,6 +2252,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       final timestamp = now.millisecondsSinceEpoch.toString();
       final orderId = _currentOrderIdForUpload;
 
+      const dummyLocation = '24.8607,67.0011';
+
       final orderHeader = OrderUploadFormatter.formatOrderHeader(
         orderId: orderId,
         partyName: partyDisplay(selectedParty),
@@ -1648,17 +2265,16 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         grossTotal: provider.grossAmount.toStringAsFixed(2),
         discount: provider.totalDiscount.toStringAsFixed(2),
         netTotal: provider.netAmount.toStringAsFixed(2),
-        deliveryParty: '',
+        deliveryParty: (_selectedShipToPartyName ?? '').trim(),
         advancePaymentDeal: _currentPaymentDealForOrder,
-        deliveryPartyRemarks: '',
-        deliveryPointRemarks: '',
-        visitId:
-            _selectedVisitIndex != null && _selectedVisitIndex! < _visits.length
-            ? _visits[_selectedVisitIndex!]['visit_id']?.toString() ?? ''
+        deliveryPartyRemarks: _showManualDeliveryAddressField
+            ? _deliveryAddressController.text.trim()
             : '',
-        cityId: _selectedRouteData?.cities ?? '',
-        location: '',
-        routeId: _selectedRouteData?.routeId ?? '',
+        deliveryPointRemarks: '',
+        visitId: _selectedApprovedVisit?.visitId ?? '',
+        cityId: (_selectedApprovedVisit?.cityIds ?? '').trim(),
+        location: dummyLocation,
+        routeId: _selectedApprovedVisit?.routeId ?? '',
         goodsAgencyId:
             _selectedAgencyIndex != null &&
                 _selectedAgencyIndex! < _agencies.length
@@ -1716,13 +2332,13 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       Navigator.pop(context); // Close loading dialog
 
       if (uploadResult.success) {
-        // Android parity: couple with attendance upload (matching Android uploadSuccess behavior)
-        // Note: attendance upload would be triggered here in full implementation
+        // Attendance intentionally skipped for now (as requested).
 
         provider.finalize();
+        await DraftOrderService.instance.createNewDraft();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(uploadResult.message),
+            content: Text('${uploadResult.message} (saved locally + uploaded)'),
             backgroundColor: Colors.green,
           ),
         );
@@ -1730,7 +2346,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(uploadResult.message),
+            content: Text(
+              '${uploadResult.message} (saved locally, upload failed)',
+            ),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 4),
           ),
@@ -1779,10 +2397,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     final packagePrice = _getItemPackagePrice(itemMap);
     final discount = _getItemDiscount(itemMap);
 
-    // Allow special price override, but use package price as default
-    final price = _specialPriceController.text.trim().isNotEmpty
-        ? (double.tryParse(_specialPriceController.text) ?? packagePrice)
-        : packagePrice;
+    // Price stays package-driven; item-level manual editing is disabled.
+    final price = packagePrice;
 
     final itemId =
         itemMap['bookid']?.toString() ??
@@ -1852,7 +2468,6 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     await _addItemToOrder(item: item, showSuccessSnack: discount > 0);
 
     _qtyController.clear();
-    _specialPriceController.clear();
     setState(() {
       _selectedItemIndex = null;
       _selectedItemPrice = '';
@@ -2001,110 +2616,132 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: theme.scaffoldBackgroundColor,
-      appBar: AppBar(
-        backgroundColor: primary,
-        elevation: 0,
-        title: const Text(
-          'Add New Order',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+    return WillPopScope(
+      onWillPop: _handleBackNavigation,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF4F7FC),
+        appBar: AppBar(
+          backgroundColor: primary,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          title: const Text(
+            'Add New Order',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+          ),
+          iconTheme: const IconThemeData(color: Colors.white),
         ),
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      body: Stack(
-        children: [
-          SingleChildScrollView(
-            child: Column(
-              children: [
-                // Show error message if API fetch failed
-                if (_errorMessage != null)
-                  Container(
-                    color: Colors.red[50],
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      children: [
-                        Icon(Icons.warning_rounded, color: Colors.red[700]),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            _errorMessage!,
-                            style: TextStyle(
-                              color: Colors.red[700],
-                              fontSize: 14,
+        body: Stack(
+          children: [
+            SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
+              child: Column(
+                children: [
+                  // Show error message if API fetch failed
+                  if (_errorMessage != null)
+                    Container(
+                      color: Colors.red[50],
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_rounded, color: Colors.red[700]),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _errorMessage!,
+                              style: TextStyle(
+                                color: Colors.red[700],
+                                fontSize: 14,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                if (!_fetchingFromApi && (_items.isEmpty || _packages.isEmpty))
-                  Container(
-                    color: Colors.amber[50],
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      children: [
-                        Icon(Icons.info_outline, color: Colors.amber[900]),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'Items: ${_items.length} | Packages: ${_packages.length}. Run sync to refresh local cache.',
-                            style: TextStyle(color: Colors.amber[900]),
+                  if (!_fetchingFromApi &&
+                      (_items.isEmpty || _packages.isEmpty))
+                    Container(
+                      color: Colors.amber[50],
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, color: Colors.amber[900]),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Items: ${_items.length} | Packages: ${_packages.length}. Run sync to refresh local cache.',
+                              style: TextStyle(color: Colors.amber[900]),
+                            ),
                           ),
-                        ),
-                        TextButton(
-                          onPressed: _fetchingFromApi
-                              ? null
-                              : () => _fetchFromApiIfNeeded(),
-                          child: const Text('Retry Sync'),
-                        ),
-                      ],
+                          TextButton(
+                            onPressed: _fetchingFromApi
+                                ? null
+                                : () => _fetchFromApiIfNeeded(),
+                            child: const Text('Retry Sync'),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                _buildTopSection(primary),
-                _buildItemEntrySection(primary),
-                _buildOrderDetailsSection(primary),
-                _buildItemsListSection(primary),
-                _buildSummarySection(primary),
-                _buildBottomActionsSection(primary),
-              ],
+                  _buildTopSection(primary),
+                  _buildItemEntrySection(primary),
+                  _buildOrderDetailsSection(primary),
+                  _buildItemsListSection(primary),
+                  _buildSummarySection(primary),
+                  _buildBottomActionsSection(primary),
+                ],
+              ),
             ),
-          ),
-          // Show fetching overlay while API is being called
-          if (_fetchingFromApi)
-            Container(
-              color: Colors.black.withOpacity(0.3),
-              child: Center(
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        CircularProgressIndicator(),
-                        SizedBox(height: 16),
-                        Text('Loading data from server...'),
-                      ],
+            // Show fetching overlay while API is being called
+            if (_fetchingFromApi)
+              Container(
+                color: Colors.black.withOpacity(0.3),
+                child: Center(
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 16),
+                          Text('Loading data from server...'),
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildTopSection(Color primary) {
     return Container(
-      color: primary.withOpacity(0.9),
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [primary, primary.withValues(alpha: 0.9)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: primary.withValues(alpha: 0.25),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
       padding: const EdgeInsets.all(12),
       child: Column(
         children: [
           _buildFieldRow(
             'Visit:',
             DropdownButton<int>(
-              value: _visits.isEmpty ? null : _selectedVisitIndex,
+              value: _approvedVisits.isEmpty ? null : _selectedVisitIndex,
               hint: const Text(
                 'Select Visit',
                 style: TextStyle(color: Colors.white),
@@ -2113,25 +2750,68 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               dropdownColor: primary,
               style: const TextStyle(color: Colors.white),
               underline: Container(),
-              items: _visits
+              items: _approvedVisits
                   .asMap()
                   .entries
                   .map(
                     (e) => DropdownMenuItem(
                       value: e.key,
-                      child: Text(deliveryPointDisplay(e.value)),
+                      child: Text(_visitRouteLabel(e.value)),
                     ),
                   )
                   .toList(),
-              onChanged: _visits.isEmpty
+              onChanged: _approvedVisits.isEmpty
                   ? null
                   : (val) async {
                       setState(() => _selectedVisitIndex = val);
+                      await _syncVisitedPartiesForSelectedVisit();
+
+                      final selectedVisit = _selectedApprovedVisit;
+
+                      DraftOrderProvider? draftProvider;
+                      try {
+                        draftProvider = Provider.of<DraftOrderProvider>(
+                          context,
+                          listen: false,
+                        );
+                      } catch (_) {
+                        draftProvider = null;
+                      }
+                      if (selectedVisit != null && draftProvider != null) {
+                        await draftProvider.updateVisit(
+                          selectedVisit.visitId,
+                          selectedVisit.routeId,
+                        );
+                      }
+
                       _recalculateTotals();
-                      await _saveDraft(syncItems: true);
+                      await _saveDraft();
                     },
             ),
           ),
+          if (_approvedVisits.isEmpty)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () async {
+                  await _loadApprovedVisits();
+                  if (!mounted) return;
+                  if (_approvedVisits.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'No approved visits found. Please sync visits/API.',
+                        ),
+                      ),
+                    );
+                  }
+                },
+                child: const Text(
+                  'Refresh Visits',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
           const SizedBox(height: 8),
           _buildFieldRow(
             'Party :',
@@ -2144,8 +2824,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                   vertical: 12,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4),
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
                   children: [
@@ -2181,8 +2861,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                   vertical: 12,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4),
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
                   children: [
@@ -2210,7 +2890,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
           _buildFieldRow(
             'Delivery\nAddress:',
             InkWell(
-              onTap: _deliveryPoints.isEmpty ? null : _pickDeliveryPoint,
+              onTap: _pickShipToDeliveryAddress,
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(
@@ -2218,18 +2898,14 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                   vertical: 12,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4),
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
                   children: [
                     Expanded(
                       child: Text(
-                        _deliveryAddressController.text.trim().isNotEmpty
-                            ? _deliveryAddressController.text
-                            : (_deliveryPoints.isEmpty
-                                  ? 'No delivery points available'
-                                  : 'Select Delivery Address'),
+                        _shipToDisplayLabel,
                         style: const TextStyle(color: Colors.white),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -2242,43 +2918,94 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               ),
             ),
           ),
+          if (_showManualDeliveryAddressField) ...[
+            const SizedBox(height: 8),
+            _buildFieldRow(
+              'Remarks:',
+              TextField(
+                controller: _deliveryAddressController,
+                minLines: 2,
+                maxLines: 4,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Enter delivery address / remarks',
+                  hintStyle: TextStyle(color: Colors.white.withOpacity(0.7)),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.18),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+                onChanged: (_) {
+                  _saveDraft(syncItems: false);
+                },
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
-          _buildFieldRow(
-            'Package :',
-            InkWell(
-              onTap: _packages.isEmpty ? null : _pickPackage,
-              child: Container(
+          if (_isShipToSelected)
+            _buildFieldRow(
+              'Package :',
+              InkWell(
+                onTap: _packages.isEmpty ? null : _pickPackage,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _selectedPackageIndex != null &&
+                                  _selectedPackageIndex! < _packages.length
+                              ? packageDisplay(
+                                  _packages[_selectedPackageIndex!],
+                                )
+                              : (_packages.isEmpty
+                                    ? 'No packages available'
+                                    : 'Select Package'),
+                          style: const TextStyle(color: Colors.white),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.search, color: Colors.white, size: 18),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else
+            _buildFieldRow(
+              'Package :',
+              Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
                   vertical: 12,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4),
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        _selectedPackageIndex != null &&
-                                _selectedPackageIndex! < _packages.length
-                            ? packageDisplay(_packages[_selectedPackageIndex!])
-                            : (_packages.isEmpty
-                                  ? 'No packages available'
-                                  : 'Select Package'),
-                        style: const TextStyle(color: Colors.white),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Icon(Icons.search, color: Colors.white, size: 18),
-                  ],
+                child: const Text(
+                  'Select Ship To first',
+                  style: TextStyle(color: Colors.white70),
                 ),
               ),
             ),
-          ),
           // Android parity: conditionally show payment deals when package scheme == 2
           if (_selectedPackageIndex != null &&
               _selectedPackageIndex! < _packages.length &&
@@ -2294,8 +3021,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                   vertical: 8,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4),
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -2349,8 +3076,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(4),
+                color: Colors.orange.withValues(alpha: 0.32),
+                borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: Colors.orange, width: 2),
               ),
               child: Row(
@@ -2401,7 +3128,18 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
   Widget _buildItemEntrySection(Color primary) {
     return Container(
-      color: primary.withOpacity(0.15),
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 12,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
       padding: const EdgeInsets.all(12),
       child: Column(
         children: [
@@ -2418,7 +3156,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     ),
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      border: Border.all(color: Colors.grey),
+                      border: Border.all(color: const Color(0xFFD1D9E6)),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                     child: Row(
                       children: [
@@ -2473,8 +3212,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     filled: true,
                     fillColor: Colors.white,
                     border: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.grey),
-                      borderRadius: BorderRadius.zero,
+                      borderSide: const BorderSide(color: Color(0xFFD1D9E6)),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                     contentPadding: const EdgeInsets.symmetric(vertical: 14),
                   ),
@@ -2493,49 +3232,12 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     vertical: 16,
                   ),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(4),
+                    borderRadius: BorderRadius.circular(10),
                   ),
                 ),
                 child: const Text(
                   'ADD',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _specialRemarksController,
-                  decoration: InputDecoration(
-                    hintText: 'Special Remarks',
-                    filled: true,
-                    fillColor: Colors.white,
-                    border: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.grey),
-                      borderRadius: BorderRadius.zero,
-                    ),
-                    contentPadding: const EdgeInsets.all(12),
-                  ),
-                ),
-              ),
-              Container(width: 2, height: 48, color: Colors.grey),
-              Expanded(
-                child: TextField(
-                  controller: _specialPriceController,
-                  keyboardType: TextInputType.number,
-                  decoration: InputDecoration(
-                    hintText: 'Special Price',
-                    filled: true,
-                    fillColor: Colors.white,
-                    border: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.grey),
-                      borderRadius: BorderRadius.zero,
-                    ),
-                    contentPadding: const EdgeInsets.all(12),
-                  ),
                 ),
               ),
             ],
@@ -2547,7 +3249,18 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
   Widget _buildOrderDetailsSection(Color primary) {
     return Container(
-      color: primary.withOpacity(0.15),
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 12,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
       padding: const EdgeInsets.all(12),
       child: Row(
         children: [
@@ -2555,8 +3268,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: primary,
-                borderRadius: BorderRadius.circular(4),
+                color: primary.withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
                 'Date : $_fixedDateTime',
@@ -2574,11 +3287,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: primary,
-                borderRadius: BorderRadius.circular(4),
+                color: primary.withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
-                'ID : $_currentOrderIdForDisplay',
+                'Order ID: $_currentOrderIdForDisplay',
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 16,
@@ -2598,19 +3311,41 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       builder: (context, provider, child) {
         if (provider.items.isEmpty) {
           return Container(
-            padding: const EdgeInsets.all(32),
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
             child: const Text(
               'No items added yet',
-              style: TextStyle(color: Colors.grey, fontSize: 16),
+              style: TextStyle(color: Colors.grey, fontSize: 15),
+              textAlign: TextAlign.center,
             ),
           );
         }
 
         return Container(
-          margin: const EdgeInsets.all(12),
+          margin: const EdgeInsets.only(bottom: 10),
           decoration: BoxDecoration(
-            border: Border.all(color: primary, width: 2),
-            borderRadius: BorderRadius.circular(4),
+            color: Colors.white,
+            border: Border.all(color: primary.withValues(alpha: 0.25)),
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
           ),
           child: Column(
             children: [
@@ -2679,12 +3414,12 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               ),
               ...provider.items.map(
                 (item) => Container(
-                  margin: const EdgeInsets.all(8),
-                  padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: primary.withOpacity(0.15),
+                    color: primary.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: primary),
+                    border: Border.all(color: primary.withValues(alpha: 0.25)),
                   ),
                   child: Row(
                     children: [
@@ -2715,7 +3450,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                               horizontal: 8,
                             ),
                             decoration: BoxDecoration(
-                              color: primary.withOpacity(0.2),
+                              color: primary.withValues(alpha: 0.15),
                               borderRadius: BorderRadius.circular(4),
                               border: Border.all(color: primary),
                             ),
@@ -2770,6 +3505,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 8),
             ],
           ),
         );
@@ -2781,7 +3517,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     return Consumer<InvoiceProvider>(
       builder: (context, provider, child) {
         return Container(
-          margin: const EdgeInsets.symmetric(horizontal: 12),
+          margin: const EdgeInsets.only(bottom: 10),
           child: Column(
             children: [
               Container(
@@ -2792,8 +3528,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 decoration: BoxDecoration(
                   color: primary,
                   borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(4),
-                    topRight: Radius.circular(4),
+                    topLeft: Radius.circular(12),
+                    topRight: Radius.circular(12),
                   ),
                 ),
                 child: const Row(
@@ -2833,10 +3569,10 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 ),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  border: Border.all(color: primary),
+                  border: Border.all(color: primary.withValues(alpha: 0.3)),
                   borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(4),
-                    bottomRight: Radius.circular(4),
+                    bottomLeft: Radius.circular(12),
+                    bottomRight: Radius.circular(12),
                   ),
                 ),
                 child: Row(
@@ -2878,7 +3614,19 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
   Widget _buildBottomActionsSection(Color primary) {
     return Container(
+      margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
       child: Column(
         children: [
           Row(
@@ -2887,8 +3635,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 child: Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    border: Border.all(color: Colors.grey),
+                    color: const Color(0xFFF8FAFC),
+                    border: Border.all(color: const Color(0xFFD1D9E6)),
                     borderRadius: BorderRadius.circular(24),
                   ),
                   child: Text(
@@ -2901,12 +3649,10 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton(
-                  onPressed: () {
-                    // Add remarks dialog
-                  },
+                  onPressed: _showOrderRemarksDialog,
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.all(12),
-                    side: const BorderSide(color: Colors.grey),
+                    side: const BorderSide(color: Color(0xFFD1D9E6)),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(24),
                     ),
@@ -2919,6 +3665,26 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               ),
             ],
           ),
+          if (_specialRemarksController.text.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEEF4FF),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFCBDCFB)),
+              ),
+              child: Text(
+                'Remarks: ${_specialRemarksController.text.trim()}',
+                style: const TextStyle(
+                  color: Color(0xFF1E3A8A),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Row(
             children: [
@@ -2931,42 +3697,40 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    border: Border.all(color: Colors.grey),
-                    borderRadius: BorderRadius.circular(4),
+                    color: const Color(0xFFF8FAFC),
+                    border: Border.all(color: const Color(0xFFD1D9E6)),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  child: DropdownButton<int>(
-                    value: _deliveryPoints.isEmpty
-                        ? null
-                        : _selectedDeliveryPointIndex,
-                    hint: const Text('Select Via Delivery Point'),
-                    isExpanded: true,
-                    underline: Container(),
-                    items: _deliveryPoints
-                        .asMap()
-                        .entries
-                        .map(
-                          (e) => DropdownMenuItem(
-                            value: e.key,
-                            child: Text(deliveryPointDisplay(e.value)),
+                  child: InkWell(
+                    onTap: _pickDeliveryPoint,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _selectedDeliveryPointIndex != null &&
+                                      _selectedDeliveryPointIndex! <
+                                          _deliveryPoints.length
+                                  ? _deliveryPointNameFromMap(
+                                          _deliveryPoints[_selectedDeliveryPointIndex!],
+                                        ).isNotEmpty
+                                        ? _deliveryPointNameFromMap(
+                                            _deliveryPoints[_selectedDeliveryPointIndex!],
+                                          )
+                                        : deliveryPointDisplay(
+                                            _deliveryPoints[_selectedDeliveryPointIndex!],
+                                          )
+                                  : 'Select Via Delivery Point',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        )
-                        .toList(),
-                    onChanged: _deliveryPoints.isEmpty
-                        ? null
-                        : (val) async {
-                            setState(() => _selectedDeliveryPointIndex = val);
-                            if (val != null && val < _deliveryPoints.length) {
-                              final dp = _deliveryPoints[val];
-                              _deliveryAddressController.text =
-                                  dp['address']?.toString() ??
-                                  dp['name']?.toString() ??
-                                  dp['location']?.toString() ??
-                                  '';
-                            }
-                            _recalculateTotals();
-                            await _saveDraft();
-                          },
+                          const SizedBox(width: 8),
+                          const Icon(Icons.search, size: 18),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -2978,20 +3742,14 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               Expanded(
                 child: ElevatedButton(
                   onPressed: () async {
-                    context.read<InvoiceProvider>().reset();
-                    _clearSelectedItemSelection();
-                    _recalculateTotals();
-                    await _saveDraft(syncItems: true);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Order reset')),
-                    );
+                    await _resetWholeOrderScreen();
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: primary,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(4),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                   ),
                   child: const Text(
@@ -3011,7 +3769,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(4),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                   ),
                   child: const Text(

@@ -24,6 +24,11 @@ class SessionService {
   static const String _legacyUserIdKey = 'user_id';
   static const String _legacyEmployeeIdKey = 'employee_id';
 
+  static const String _userVisitPayloadPrefix = 'user_visit_payload_';
+  static const String _userVisitedPartiesPayloadPrefix =
+      'user_visited_parties_payload_';
+  static const String _userVisitMetaPrefix = 'user_visit_meta_';
+
   static const String domainName = 'https://www.hisaab.org';
   static const String domainName2 = 'https://www.hisaab.org';
 
@@ -101,18 +106,27 @@ class SessionService {
 
   static Future<String> getStaticIP() async {
     final prefs = await _prefs;
-    return _normalizedOrDefault(prefs.getString(_staticIpKey), _defaultStaticIp);
+    return _normalizedOrDefault(
+      prefs.getString(_staticIpKey),
+      _defaultStaticIp,
+    );
   }
 
   // User Info
   static Future<void> setUserRecId(String id) async {
     final prefs = await _prefs;
-    await prefs.setString(_userRecIdKey, _normalizedOrDefault(id, _defaultUserRecId));
+    await prefs.setString(
+      _userRecIdKey,
+      _normalizedOrDefault(id, _defaultUserRecId),
+    );
   }
 
   static Future<String> getUserRecId() async {
     final prefs = await _prefs;
-    return _normalizedOrDefault(prefs.getString(_userRecIdKey), _defaultUserRecId);
+    return _normalizedOrDefault(
+      prefs.getString(_userRecIdKey),
+      _defaultUserRecId,
+    );
   }
 
   static Future<void> setUserAccount(String account) async {
@@ -151,12 +165,18 @@ class SessionService {
 
   static Future<void> setDataUpdateId(String id) async {
     final prefs = await _prefs;
-    await prefs.setString(_dataUpdateIdKey, _normalizedOrDefault(id, _defaultDataUpdateId));
+    await prefs.setString(
+      _dataUpdateIdKey,
+      _normalizedOrDefault(id, _defaultDataUpdateId),
+    );
   }
 
   static Future<String> getDataUpdateId() async {
     final prefs = await _prefs;
-    return _normalizedOrDefault(prefs.getString(_dataUpdateIdKey), _defaultDataUpdateId);
+    return _normalizedOrDefault(
+      prefs.getString(_dataUpdateIdKey),
+      _defaultDataUpdateId,
+    );
   }
 
   static Future<void> setDataUpdateInfo({
@@ -164,15 +184,18 @@ class SessionService {
     required String id,
   }) async {
     final prefs = await _prefs;
-    await prefs.setString(_dataUpdateDateKey, _normalizedOrDefault(date, _defaultDataUpdateDate));
-    await prefs.setString(_dataUpdateIdKey, _normalizedOrDefault(id, _defaultDataUpdateId));
+    await prefs.setString(
+      _dataUpdateDateKey,
+      _normalizedOrDefault(date, _defaultDataUpdateDate),
+    );
+    await prefs.setString(
+      _dataUpdateIdKey,
+      _normalizedOrDefault(id, _defaultDataUpdateId),
+    );
   }
 
   static Future<Map<String, String>> getDataUpdateInfo() async {
-    return {
-      'date': await getDataUpdateDate(),
-      'id': await getDataUpdateId(),
-    };
+    return {'date': await getDataUpdateDate(), 'id': await getDataUpdateId()};
   }
 
   // Activity State
@@ -313,6 +336,99 @@ class SessionService {
     return SharedPreferences.getInstance();
   }
 
+  static String _visitScopedKey(String prefix, int? employeeId) {
+    final id = employeeId ?? 0;
+    return '$prefix$id';
+  }
+
+  static Future<void> saveUserVisitPayload({
+    required int? employeeId,
+    required String payload,
+  }) async {
+    final prefs = await _prefs;
+    await prefs.setString(
+      _visitScopedKey(_userVisitPayloadPrefix, employeeId),
+      payload,
+    );
+  }
+
+  static Future<String?> getUserVisitPayload({required int? employeeId}) async {
+    final prefs = await _prefs;
+    return prefs.getString(
+      _visitScopedKey(_userVisitPayloadPrefix, employeeId),
+    );
+  }
+
+  static Future<void> saveUserVisitedPartiesPayload({
+    required int? employeeId,
+    required String payload,
+  }) async {
+    final prefs = await _prefs;
+    await prefs.setString(
+      _visitScopedKey(_userVisitedPartiesPayloadPrefix, employeeId),
+      payload,
+    );
+  }
+
+  static Future<String?> getUserVisitedPartiesPayload({
+    required int? employeeId,
+  }) async {
+    final prefs = await _prefs;
+    return prefs.getString(
+      _visitScopedKey(_userVisitedPartiesPayloadPrefix, employeeId),
+    );
+  }
+
+  static Future<void> saveUserVisitMeta({
+    required int? employeeId,
+    String? selectedVisitId,
+    String? selectedRouteId,
+    String? selectedCityId,
+    String? updatedAt,
+  }) async {
+    final prefs = await _prefs;
+    final key = _visitScopedKey(_userVisitMetaPrefix, employeeId);
+    final existingRaw = prefs.getString(key);
+    Map<String, dynamic> meta = {};
+    if (existingRaw != null && existingRaw.trim().isNotEmpty) {
+      try {
+        meta = Map<String, dynamic>.from(jsonDecode(existingRaw) as Map);
+      } catch (_) {
+        meta = {};
+      }
+    }
+
+    if (selectedVisitId != null) {
+      meta['selected_visit_id'] = selectedVisitId;
+    }
+    if (selectedRouteId != null) {
+      meta['selected_route_id'] = selectedRouteId;
+    }
+    if (selectedCityId != null) {
+      meta['selected_city_id'] = selectedCityId;
+    }
+    meta['updated_at'] = (updatedAt != null && updatedAt.trim().isNotEmpty)
+        ? updatedAt.trim()
+        : DateTime.now().toIso8601String();
+
+    await prefs.setString(key, jsonEncode(meta));
+  }
+
+  static Future<Map<String, dynamic>> getUserVisitMeta({
+    required int? employeeId,
+  }) async {
+    final prefs = await _prefs;
+    final raw = prefs.getString(
+      _visitScopedKey(_userVisitMetaPrefix, employeeId),
+    );
+    if (raw == null || raw.trim().isEmpty) return {};
+    try {
+      return Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    } catch (_) {
+      return {};
+    }
+  }
+
   static String _normalizedOrDefault(String? value, String defaultValue) {
     final normalized = value?.trim();
     if (normalized == null || normalized.isEmpty) {
@@ -336,6 +452,15 @@ class SessionService {
     await prefs.remove(_isAppUpdateImportantKey);
     await prefs.remove(_legacyUserIdKey);
     await prefs.remove(_legacyEmployeeIdKey);
+
+    final employeeId = await getEmployeeId();
+    if (employeeId != null) {
+      await prefs.remove(_visitScopedKey(_userVisitPayloadPrefix, employeeId));
+      await prefs.remove(
+        _visitScopedKey(_userVisitedPartiesPayloadPrefix, employeeId),
+      );
+      await prefs.remove(_visitScopedKey(_userVisitMetaPrefix, employeeId));
+    }
     // Keep saved credentials for login pre-fill flow.
   }
 }

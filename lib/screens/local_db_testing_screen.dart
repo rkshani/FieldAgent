@@ -29,8 +29,16 @@ class _LocalDbTestingScreenState extends State<LocalDbTestingScreen> {
     try {
       final db = await LocalDbService.instance.database;
 
-      // Fetch all data from all tables
-      final localApiCache = await db.query('local_api_cache');
+      // Avoid reading full payload blobs in testing view to prevent CursorWindow overflow.
+      final localApiCache = await db.rawQuery('''
+        SELECT
+          cache_key,
+          LENGTH(payload) AS payload_size,
+          SUBSTR(payload, 1, 400) AS payload_preview,
+          updated_at
+        FROM local_api_cache
+        ORDER BY updated_at DESC
+      ''');
       final draftOrders = await db.query('draft_orders');
       final draftOrderItems = await db.query('draft_order_items');
 
@@ -294,7 +302,9 @@ class _LocalDbTestingScreenState extends State<LocalDbTestingScreen> {
   String _getRecordPreview(Map<String, dynamic> record, String tableName) {
     switch (tableName) {
       case 'local_api_cache':
-        return record['cache_key']?.toString() ?? 'N/A';
+        final key = record['cache_key']?.toString() ?? 'N/A';
+        final bytes = record['payload_size']?.toString() ?? '0';
+        return '$key ($bytes chars)';
       case 'draft_orders':
         return record['party_name']?.toString() ??
             record['local_order_id']?.toString() ??
@@ -310,7 +320,7 @@ class _LocalDbTestingScreenState extends State<LocalDbTestingScreen> {
   Widget _buildFieldRow(ThemeData theme, String key, dynamic value) {
     String displayValue;
 
-    // Special handling for JSON payloads
+    // Pretty-print JSON only when full payload is actually present.
     if (key == 'payload' && value is String) {
       try {
         final decoded = jsonDecode(value);
@@ -325,7 +335,7 @@ class _LocalDbTestingScreenState extends State<LocalDbTestingScreen> {
     // Truncate long values
     bool isLong = displayValue.length > 100;
     String previewValue = isLong
-        ? displayValue.substring(0, 100) + '...'
+        ? '${displayValue.substring(0, 100)}...'
         : displayValue;
 
     return Container(

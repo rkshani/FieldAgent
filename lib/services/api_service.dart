@@ -496,11 +496,12 @@ class ApiService {
     required String orderItems,
   }) async {
     try {
-      final url = '${tclApiBaseNewTest}app_web_api.php';
+      final url = '${tclApiBaseNewTest}taj_api.php?postOrderZ=1';
 
       final body = {
-        'postOrderZ': '1',
         'order': orderHeader,
+        // Legacy Android used `item`; keep both for server compatibility.
+        'item': orderItems,
         'items': orderItems,
       };
 
@@ -556,5 +557,139 @@ class ApiService {
       debugPrint('[ApiService.postOrder] Error: $e');
       return {'status': 'failed', 'message': 'Upload failed: $e'};
     }
+  }
+
+  /// Testing utility: fetch created orders from server with endpoint fallbacks.
+  static Future<Map<String, dynamic>>
+  fetchOnlineCreatedOrdersForTesting() async {
+    try {
+      final userId = await SessionService.getUserId();
+      final employeeId = await SessionService.getEmployeeId();
+      final uid = (userId ?? employeeId)?.toString();
+      if (uid == null || uid.isEmpty) {
+        return {
+          'success': false,
+          'message': 'No logged-in user id found',
+          'endpoint': null,
+          'orders': <Map<String, dynamic>>[],
+          'raw': null,
+        };
+      }
+
+      final base = (await SessionService.getStaticIP()).replaceAll(
+        RegExp(r'/$'),
+        '',
+      );
+      final candidates = <String>[
+        '$base/tclorder_apis/taj_api.php?getMyOrders=1&userid=$uid',
+        '$base/tclorder_apis/taj_api.php?getmyorders=1&userid=$uid',
+        '$base/tclorder_apis/taj_api.php?myOrders=1&userid=$uid',
+        '$base/tclorder_apis/order_web_api_z.php?get_orders=1&userid=$uid',
+        '${tclApiBaseNewTest}taj_api.php?getMyOrders=1&userid=$uid',
+        '${tclApiBaseNewTest}taj_api.php?getmyorders=1&userid=$uid',
+      ];
+
+      String? lastError;
+      String? bestEndpoint;
+      String? bestRaw;
+      List<Map<String, dynamic>> bestOrders = const [];
+
+      for (final url in candidates) {
+        try {
+          final response = await _getWithRetry(
+            Uri.parse(url),
+            timeout: const Duration(seconds: 30),
+            maxAttempts: 1,
+          );
+          if (response.statusCode != 200) {
+            lastError = 'HTTP ${response.statusCode} at $url';
+            continue;
+          }
+
+          final raw = response.body;
+          final parsed = _extractOrdersFromPayload(raw);
+          bestEndpoint = url;
+          bestRaw = raw;
+          bestOrders = parsed;
+
+          if (parsed.isNotEmpty) {
+            return {
+              'success': true,
+              'message': 'Orders fetched successfully',
+              'endpoint': bestEndpoint,
+              'orders': bestOrders,
+              'raw': bestRaw,
+            };
+          }
+        } catch (e) {
+          lastError = e.toString();
+        }
+      }
+
+      if (bestEndpoint != null) {
+        return {
+          'success': true,
+          'message': 'Endpoint reachable but no orders parsed',
+          'endpoint': bestEndpoint,
+          'orders': bestOrders,
+          'raw': bestRaw,
+        };
+      }
+
+      return {
+        'success': false,
+        'message': lastError ?? 'Unable to fetch online orders',
+        'endpoint': null,
+        'orders': <Map<String, dynamic>>[],
+        'raw': null,
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Online orders fetch error: $e',
+        'endpoint': null,
+        'orders': <Map<String, dynamic>>[],
+        'raw': null,
+      };
+    }
+  }
+
+  static List<Map<String, dynamic>> _extractOrdersFromPayload(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      final list = _extractList(decoded);
+      return list
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static List<dynamic> _extractList(dynamic node) {
+    if (node is List) return node;
+    if (node is Map) {
+      for (final key in const [
+        'data',
+        'orders',
+        'result',
+        'rows',
+        'records',
+        'list',
+        'my_orders',
+      ]) {
+        final value = node[key];
+        if (value is List) return value;
+      }
+      for (final value in node.values) {
+        if (value is List && value.isNotEmpty) return value;
+      }
+      for (final value in node.values) {
+        final nested = _extractList(value);
+        if (nested.isNotEmpty) return nested;
+      }
+    }
+    return const [];
   }
 }

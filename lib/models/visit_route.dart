@@ -17,9 +17,16 @@ class AgentApprovedVisit {
     return AgentApprovedVisit(
       id: json['id'] != null ? int.tryParse(json['id'].toString()) : null,
       visitId: json['visit_id']?.toString(),
-      routes: json['routes']?.toString(),
-      cityIds: json['cityids']?.toString(),
-      routeId: json['routeid']?.toString(),
+      routes:
+          json['route_name']?.toString() ??
+          json['route']?.toString() ??
+          json['routes']?.toString(),
+      cityIds:
+          json['city_id']?.toString() ??
+          json['cityid']?.toString() ??
+          json['cityids']?.toString() ??
+          json['cities']?.toString(),
+      routeId: json['route_id']?.toString() ?? json['routeid']?.toString(),
     );
   }
 
