@@ -495,11 +495,15 @@ class ApiService {
   }) async {
     try {
       final url = ApiEndpoints.postOrderZNewTest();
-
-      final body = {
-        'order': orderHeader,
-        'item': orderItems,
+      final headers = <String, String>{
+        'Content-Type': 'application/x-www-form-urlencoded',
       };
+
+      final body = {'order': orderHeader, 'item': orderItems};
+
+      print('URL: $url');
+      print('Headers: $headers');
+      print('Body: $body');
 
       String preview(String value, {int max = 100}) {
         return value.length <= max ? value : value.substring(0, max);
@@ -511,12 +515,15 @@ class ApiService {
       debugPrint('[ApiService.postOrder] Items: ${preview(orderItems)}...');
 
       final response = await http
-          .post(Uri.parse(url), body: body)
+          .post(Uri.parse(url), headers: headers, body: body)
           .timeout(
             const Duration(seconds: 60),
             onTimeout: () =>
                 throw Exception('Order upload timeout. Please try again.'),
           );
+
+      print('Status Code: ${response.statusCode}');
+      print('Response: ${response.body}');
 
       debugPrint(
         '[ApiService.postOrder] Response status: ${response.statusCode}',
@@ -556,6 +563,7 @@ class ApiService {
         };
       }
     } catch (e) {
+      print('postOrder Error: $e');
       debugPrint('[ApiService.postOrder] Error: $e');
       return {'status': 'failed', 'message': 'Upload failed: $e'};
     }

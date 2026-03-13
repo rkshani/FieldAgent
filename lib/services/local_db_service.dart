@@ -24,7 +24,7 @@ class LocalDbService {
 
     return openDatabase(
       path,
-      version: 7,
+      version: 8,
       onCreate: (db, version) async {
         await _createLocalApiCache(db);
         await _createDraftTables(db);
@@ -51,6 +51,12 @@ class LocalDbService {
           // had DB version 6 from earlier builds without these tables.
           await _createBookingsTables(db);
         }
+        if (oldVersion < 8) {
+          await _addDraftOrderHeaderParityColumnsIfNeeded(db);
+          await _addDraftOrderItemParityColumnsIfNeeded(db);
+          await _addBookingParityColumnsIfNeeded(db);
+          await _addBookingItemParityColumnsIfNeeded(db);
+        }
       },
     );
   }
@@ -74,6 +80,13 @@ class LocalDbService {
         delivery_party TEXT,
         deal_id TEXT,
         goodsagency_id TEXT,
+        goodsagency_name TEXT,
+        delivery_party_remarks TEXT,
+        delivery_point_remarks TEXT,
+        visit_id TEXT,
+        city_id TEXT,
+        loc TEXT,
+        routeid TEXT,
         uploaded TEXT NOT NULL DEFAULT 'NO',
         uploaded_at TEXT,
         created_at TEXT NOT NULL,
@@ -89,6 +102,11 @@ class LocalDbService {
         quantity INTEGER NOT NULL DEFAULT 1,
         unit_price REAL NOT NULL DEFAULT 0,
         discount_percent REAL NOT NULL DEFAULT 0,
+        remarks TEXT,
+        direction_store TEXT,
+        special_remarks TEXT,
+        special_price REAL NOT NULL DEFAULT 0,
+        subitem_id TEXT,
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
@@ -122,10 +140,14 @@ class LocalDbService {
         goods_agency_name TEXT,
         visit_id TEXT,
         route_id TEXT,
+        city_id TEXT,
+        loc TEXT,
         package_id TEXT,
         package_name TEXT,
         payment_deal_id TEXT,
         delivery_address TEXT,
+        delivery_party_remarks TEXT,
+        delivery_point_remarks TEXT,
         order_remarks TEXT,
         status TEXT NOT NULL DEFAULT 'draft',
         finalize_flag TEXT NOT NULL DEFAULT '0',
@@ -149,7 +171,11 @@ class LocalDbService {
         quantity INTEGER NOT NULL DEFAULT 1,
         unit_price REAL NOT NULL DEFAULT 0,
         discount_percent REAL NOT NULL DEFAULT 0,
+        remarks TEXT,
+        direction_store TEXT,
         special_remarks TEXT,
+        special_price REAL NOT NULL DEFAULT 0,
+        subitem_id TEXT,
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         FOREIGN KEY (draft_order_id) REFERENCES draft_orders(id) ON DELETE CASCADE
@@ -199,6 +225,102 @@ class LocalDbService {
     } catch (_) {
       // Column already exists or table doesn't exist yet; safe to ignore.
     }
+  }
+
+  static Future<void> _addDraftOrderHeaderParityColumnsIfNeeded(
+    Database db,
+  ) async {
+    try {
+      await db.execute('ALTER TABLE draft_orders ADD COLUMN city_id TEXT');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE draft_orders ADD COLUMN loc TEXT');
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE draft_orders ADD COLUMN delivery_party_remarks TEXT',
+      );
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE draft_orders ADD COLUMN delivery_point_remarks TEXT',
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> _addDraftOrderItemParityColumnsIfNeeded(
+    Database db,
+  ) async {
+    try {
+      await db.execute('ALTER TABLE draft_order_items ADD COLUMN remarks TEXT');
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE draft_order_items ADD COLUMN direction_store TEXT',
+      );
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE draft_order_items ADD COLUMN special_price REAL NOT NULL DEFAULT 0',
+      );
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE draft_order_items ADD COLUMN subitem_id TEXT',
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> _addBookingParityColumnsIfNeeded(Database db) async {
+    try {
+      await db.execute('ALTER TABLE bookings ADD COLUMN goodsagency_name TEXT');
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE bookings ADD COLUMN delivery_party_remarks TEXT',
+      );
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE bookings ADD COLUMN delivery_point_remarks TEXT',
+      );
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE bookings ADD COLUMN visit_id TEXT');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE bookings ADD COLUMN city_id TEXT');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE bookings ADD COLUMN loc TEXT');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE bookings ADD COLUMN routeid TEXT');
+    } catch (_) {}
+  }
+
+  static Future<void> _addBookingItemParityColumnsIfNeeded(Database db) async {
+    try {
+      await db.execute('ALTER TABLE booking_items ADD COLUMN remarks TEXT');
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE booking_items ADD COLUMN direction_store TEXT',
+      );
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE booking_items ADD COLUMN special_remarks TEXT',
+      );
+    } catch (_) {}
+    try {
+      await db.execute(
+        'ALTER TABLE booking_items ADD COLUMN special_price REAL NOT NULL DEFAULT 0',
+      );
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE booking_items ADD COLUMN subitem_id TEXT');
+    } catch (_) {}
   }
 
   Future<void> saveLocalData({

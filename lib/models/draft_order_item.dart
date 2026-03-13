@@ -7,7 +7,11 @@ class DraftOrderItem {
   final int quantity;
   final double unitPrice;
   final double discountPercent;
+  final String? remarks;
+  final String? directionStore;
   final String? specialRemarks;
+  final double specialPrice;
+  final String? subItemId;
   final int sortOrder;
   final String createdAt;
 
@@ -19,7 +23,11 @@ class DraftOrderItem {
     required this.quantity,
     required this.unitPrice,
     this.discountPercent = 0,
+    this.remarks,
+    this.directionStore,
     this.specialRemarks,
+    this.specialPrice = 0,
+    this.subItemId,
     this.sortOrder = 0,
     required this.createdAt,
   });
@@ -37,7 +45,11 @@ class DraftOrderItem {
       'quantity': quantity,
       'unit_price': unitPrice,
       'discount_percent': discountPercent,
+      'remarks': remarks,
+      'direction_store': directionStore,
       'special_remarks': specialRemarks,
+      'special_price': specialPrice,
+      'subitem_id': subItemId,
       'sort_order': sortOrder,
       'created_at': createdAt,
     };
@@ -52,7 +64,11 @@ class DraftOrderItem {
       quantity: map['quantity'] as int? ?? 1,
       unitPrice: (map['unit_price'] as num?)?.toDouble() ?? 0,
       discountPercent: (map['discount_percent'] as num?)?.toDouble() ?? 0,
+      remarks: map['remarks'] as String?,
+      directionStore: map['direction_store'] as String?,
       specialRemarks: map['special_remarks'] as String?,
+      specialPrice: (map['special_price'] as num?)?.toDouble() ?? 0,
+      subItemId: map['subitem_id'] as String?,
       sortOrder: map['sort_order'] as int? ?? 0,
       createdAt: map['created_at'] as String? ?? '',
     );

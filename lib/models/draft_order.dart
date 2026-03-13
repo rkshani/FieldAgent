@@ -13,10 +13,14 @@ class DraftOrder {
   final String? goodsAgencyName;
   final String? visitId;
   final String? routeId;
+  final String? cityId;
+  final String? location;
   final String? packageId;
   final String? packageName;
   final String? paymentDealId;
   final String? deliveryAddress;
+  final String? deliveryPartyRemarks;
+  final String? deliveryPointRemarks;
   final String? orderRemarks;
   final String status;
   final String finalizeFlag;
@@ -41,10 +45,14 @@ class DraftOrder {
     this.goodsAgencyName,
     this.visitId,
     this.routeId,
+    this.cityId,
+    this.location,
     this.packageId,
     this.packageName,
     this.paymentDealId,
     this.deliveryAddress,
+    this.deliveryPartyRemarks,
+    this.deliveryPointRemarks,
     this.orderRemarks,
     this.status = 'draft',
     this.finalizeFlag = '0',
@@ -75,10 +83,14 @@ class DraftOrder {
       'goods_agency_name': goodsAgencyName,
       'visit_id': visitId,
       'route_id': routeId,
+      'city_id': cityId,
+      'loc': location,
       'package_id': packageId,
       'package_name': packageName,
       'payment_deal_id': paymentDealId,
       'delivery_address': deliveryAddress,
+      'delivery_party_remarks': deliveryPartyRemarks,
+      'delivery_point_remarks': deliveryPointRemarks,
       'order_remarks': orderRemarks,
       'status': status,
       'finalize_flag': finalizeFlag,
@@ -116,10 +128,14 @@ class DraftOrder {
       goodsAgencyName: map['goods_agency_name'] as String?,
       visitId: map['visit_id'] as String?,
       routeId: map['route_id'] as String?,
+      cityId: map['city_id'] as String?,
+      location: map['loc'] as String?,
       packageId: map['package_id'] as String?,
       packageName: map['package_name'] as String?,
       paymentDealId: map['payment_deal_id'] as String?,
       deliveryAddress: map['delivery_address'] as String?,
+      deliveryPartyRemarks: map['delivery_party_remarks'] as String?,
+      deliveryPointRemarks: map['delivery_point_remarks'] as String?,
       orderRemarks: map['order_remarks'] as String?,
       status: map['status'] as String? ?? 'draft',
       finalizeFlag: map['finalize_flag'] as String? ?? '0',

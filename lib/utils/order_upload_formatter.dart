@@ -6,15 +6,19 @@ class OrderUploadFormatter {
   static const String _defaultFieldValue = '0';
 
   /// Format order header to Android format
-  /// Format: id_partyName_pkgName_deliveryPoint_orderBy_timestamp_remarks_grossTotal_
-  ///         discount_netTotal_deliveryParty_advancePaymentDeal_deliveryPartyRemarks_
-  ///         deliveryPointRemarks_visit_id_city_id_loc_routeid_goodsAgencyid_goodsAgencyname
+  /// Strict legacy format (as provided sample):
+  /// orderId_partyName_billToPartyId_packageId_deliveryPoint_checkedBy_orderBy_salesman_
+  /// timestamp_remarks_gross_discount_net_deliveryParty_advancePaymentDeal_
+  /// deliveryPartyRemarks_visitId_cityId_loc_routeId_goodsAgencyId_goodsAgencyName//
   static String formatOrderHeader({
     required String orderId,
     required String partyName,
+    required String billToPartyId,
     required String packageName,
     required String deliveryPoint,
+    required String checkedBy,
     required String orderBy,
+    required String salesmanName,
     required String timestamp,
     required String remarks,
     required String grossTotal,
@@ -34,9 +38,12 @@ class OrderUploadFormatter {
     return [
       _safeString(orderId, fallback: _defaultFieldValue),
       _safeString(partyName, fallback: _defaultFieldValue),
+      _safeString(billToPartyId, fallback: _defaultFieldValue),
       _safeString(packageName, fallback: _defaultFieldValue),
       _safeString(deliveryPoint, fallback: _defaultFieldValue),
+      _safeString(checkedBy, fallback: _defaultFieldValue),
       _safeString(orderBy, fallback: _defaultFieldValue),
+      _safeString(salesmanName, fallback: _defaultFieldValue),
       _safeString(timestamp, fallback: _defaultFieldValue),
       _safeString(remarks, fallback: _defaultFieldValue),
       _safeString(grossTotal, fallback: _defaultFieldValue),
@@ -52,13 +59,13 @@ class OrderUploadFormatter {
       _safeString(routeId, fallback: _defaultFieldValue),
       _safeString(goodsAgencyId, fallback: _defaultFieldValue),
       _safeString(goodsAgencyName, fallback: _defaultFieldValue),
-    ].join('_');
+    ].join('_') + '//';
   }
 
   /// Format order items to Android format
-  /// Format per item: orderID_name_price_qty_percent_total_grossAmount_remarks_directionStore_
-  ///                   specialRemarks_specialPrice_subitemid/
-  /// Items are joined without separator (each ends with /)
+  /// Strict legacy item format per item:
+  /// orderId_x_x_itemId_qty_price_percent_groupDiscount_total_gross_x_directionStore_remark_specialPrice_subitemId/
+  /// Items are joined without extra separator and each item keeps trailing '/'.
   static String formatOrderItems({
     required List<Map<String, dynamic>> items,
     required String orderId,
@@ -70,7 +77,10 @@ class OrderUploadFormatter {
         item['special_remarks']?.toString() ?? '',
       );
       final remarksPart = parsedSpecial.remarks;
-      final subitemId = parsedSpecial.subItemId;
+      final subitemId = _safeString(
+        item['subitem_id'] ?? parsedSpecial.subItemId,
+        fallback: '',
+      );
 
       final price = _safeString(item['price'] ?? '0', fallback: '0');
       final qty = _safeString(
@@ -83,23 +93,20 @@ class OrderUploadFormatter {
 
       final itemStr = [
         orderId,
-        _safeString(
-          item['name'] ?? item['bookname'] ?? '',
-          fallback: _defaultFieldValue,
-        ),
-        price,
+        'x',
+        'x',
+        _safeString(item['item_id'] ?? item['bookid'] ?? '', fallback: _defaultFieldValue),
         qty,
+        price,
         _safeString(
           item['discount_percent'] ?? item['percent'] ?? '0',
           fallback: '0',
         ),
+        _safeString(item['group_discount'] ?? '0', fallback: '0'),
         _safeString(item['total'] ?? grossAmount, fallback: '0'),
         grossAmount,
-        _safeString(item['remarks'] ?? '', fallback: _defaultFieldValue),
-        _safeString(
-          item['direction_store'] ?? '',
-          fallback: _defaultFieldValue,
-        ),
+        'x',
+        _safeString(item['direction_store'] ?? '', fallback: _defaultFieldValue),
         _safeString(remarksPart, fallback: _defaultFieldValue),
         _safeString(item['special_price'] ?? '0', fallback: '0'),
         _safeString(subitemId, fallback: _defaultFieldValue),
@@ -108,11 +115,8 @@ class OrderUploadFormatter {
       formattedItems.add('$itemStr/');
     }
 
-    // Join all items and remove trailing /
-    final joined = formattedItems.join('');
-    return joined.endsWith('/')
-        ? joined.substring(0, joined.length - 1)
-        : joined;
+    // Keep trailing slash to match strict legacy sample.
+    return formattedItems.join('');
   }
 
   /// Safe string conversion (empty string if null)

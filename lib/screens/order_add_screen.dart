@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -1433,6 +1431,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
             price: item.unitPrice,
             quantity: item.quantity,
             discountPercent: item.discountPercent,
+            remarks: item.remarks ?? '',
+            directionStore: item.directionStore ?? '',
+            specialRemarks: item.specialRemarks ?? '',
+            specialPrice: item.specialPrice,
+            subItemId: item.subItemId ?? '',
           ),
         );
       }
@@ -1558,6 +1561,10 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
             _selectedVisitIndex! < _approvedVisits.length
         ? _approvedVisits[_selectedVisitIndex!]
         : null;
+    final deliveryPointLocation = deliveryPoint != null
+        ? _deliveryPointLocationFromMap(deliveryPoint)
+        : '';
+    final manualAddress = _deliveryAddressController.text.trim();
 
     return {
       'bill_to_party_id': party?['partyid']?.toString(),
@@ -1582,7 +1589,15 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
           : null,
       'visit_id': visit?.visitId,
       'route_id': visit?.routeId,
-      'delivery_address': _deliveryAddressController.text.trim(),
+      'city_id': visit?.cityIds,
+      'loc': deliveryPointLocation.isNotEmpty
+          ? deliveryPointLocation
+          : manualAddress,
+      'delivery_address': manualAddress,
+      'delivery_party_remarks': _showManualDeliveryAddressField
+          ? manualAddress
+          : '',
+      'delivery_point_remarks': '',
       'order_remarks': _specialRemarksController.text.trim(),
     };
   }
@@ -1635,8 +1650,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
           quantity: item.quantity,
           unitPrice: item.price,
           discountPercent: item.discountPercent,
-          specialRemarks:
-              null, // Per-item remarks (currently not supported in UI)
+          remarks: item.remarks,
+          directionStore: item.directionStore,
+          specialRemarks: item.specialRemarks,
+          specialPrice: item.specialPrice,
+          subItemId: item.subItemId,
         );
       }
       debugPrint(
@@ -2063,8 +2081,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     // 1) Local save FIRST (Android parity: save to bookings before upload)
     int? bookingId;
     try {
-      bookingId = await DraftOrderService.instance
-          .saveFinalizedOrderToBookings(draftId);
+      bookingId = await DraftOrderService.instance.saveFinalizedOrderToBookings(
+        draftId,
+      );
       debugPrint(
         '[OrderAdd] saveFinalizedOrderToBookings(draftId=$draftId) -> bookingId=$bookingId',
       );
@@ -2130,27 +2149,30 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       final now = DateTime.now();
       final invDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(now);
       final orderId = _currentOrderIdForUpload;
+        final employeeId = (await SessionService.getEmployeeId())?.toString() ??
+          _userId.split('_').first;
+        final salesmanName = (await SessionService.getSavedUsername()) ??
+          'Salesman';
 
-        // Keep token values in the same spirit as old Android createJson.
-        // Prefer IDs when present, otherwise use saved display names.
-        final partyToken =
+      // Keep token values in the same spirit as old Android createJson.
+      // Prefer IDs when present, otherwise use saved display names.
+      final partyToken =
           (finalizedLocalDraft.order.billToPartyId ?? '').trim().isNotEmpty
           ? (finalizedLocalDraft.order.billToPartyId ?? '').trim()
           : (finalizedLocalDraft.order.partyName ?? '').trim();
-        final packageToken =
+      final packageToken =
           (finalizedLocalDraft.order.packageId ?? '').trim().isNotEmpty
           ? (finalizedLocalDraft.order.packageId ?? '').trim()
           : (finalizedLocalDraft.order.packageName ?? '').trim();
-        final deliveryPartyToken =
+      final deliveryPartyToken =
           (finalizedLocalDraft.order.shipToPartyId ?? '').trim().isNotEmpty
           ? (finalizedLocalDraft.order.shipToPartyId ?? '').trim()
           : (finalizedLocalDraft.order.deliveryPartyName ?? '').trim();
 
-      const dummyLocation = '0,0';
-
       final orderHeader = OrderUploadFormatter.formatOrderHeader(
         orderId: orderId,
-        partyName: partyToken,
+        partyName: (finalizedLocalDraft.order.partyName ?? '').trim(),
+        billToPartyId: partyToken,
         packageName: packageToken,
         deliveryPoint:
             _selectedDeliveryPointIndex != null &&
@@ -2159,7 +2181,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 _deliveryPoints[_selectedDeliveryPointIndex!],
               )
             : (finalizedLocalDraft.order.deliveryPointName ?? ''),
-        orderBy: _userId,
+        checkedBy: employeeId,
+        orderBy: employeeId,
+        salesmanName: salesmanName,
         timestamp: invDate,
         // Use persisted draft remarks to mirror Android createJson(cartOrder).
         remarks: (finalizedLocalDraft.order.orderRemarks ?? '').trim(),
@@ -2171,14 +2195,21 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         // Only use manual address if party is "unavailable"
         deliveryPartyRemarks: _showManualDeliveryAddressField
             ? _deliveryAddressController.text.trim()
-            : '',
-        deliveryPointRemarks: '',
-        visitId: _selectedApprovedVisit?.visitId ??
+            : (finalizedLocalDraft.order.deliveryPartyRemarks ?? ''),
+        deliveryPointRemarks:
+            finalizedLocalDraft.order.deliveryPointRemarks ?? '',
+        visitId:
+            _selectedApprovedVisit?.visitId ??
             finalizedLocalDraft.order.visitId ??
             '',
-        cityId: (_selectedApprovedVisit?.cityIds ?? '').trim(),
-        location: dummyLocation,
-        routeId: _selectedApprovedVisit?.routeId ??
+        cityId:
+            (_selectedApprovedVisit?.cityIds ??
+                    finalizedLocalDraft.order.cityId ??
+                    '')
+                .trim(),
+        location: (finalizedLocalDraft.order.location ?? '').trim(),
+        routeId:
+            _selectedApprovedVisit?.routeId ??
             finalizedLocalDraft.order.routeId ??
             '',
         goodsAgencyId:
@@ -2204,6 +2235,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         itemMaps = savedDraft.items
             .map(
               (dbItem) => {
+                'item_id': dbItem.itemId,
                 'name': dbItem.itemName,
                 'price': dbItem.unitPrice.toString(),
                 'quantity': dbItem.quantity.toString(),
@@ -2214,10 +2246,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                                 dbItem.quantity *
                                 (dbItem.discountPercent / 100)))
                         .toString(),
-                'remarks': '',
-                'direction_store': '',
+                'remarks': dbItem.remarks ?? '',
+                'direction_store': dbItem.directionStore ?? '',
                 'special_remarks': dbItem.specialRemarks ?? '',
-                'special_price': '0',
+                'special_price': dbItem.specialPrice.toString(),
+                'subitem_id': dbItem.subItemId ?? '',
               },
             )
             .toList();
@@ -2226,6 +2259,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         itemMaps = provider.items
             .map(
               (item) => {
+                'item_id': item.id,
                 'name': item.name,
                 'price': item.price.toString(),
                 'quantity': item.quantity.toString(),
@@ -2251,10 +2285,13 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         debugPrint('[OrderAdd] header token count=${headerTokens.length}');
         final labels = <String>[
           'localinvno/orderid',
+          'party_name',
           'partyid',
           'package_id',
           'deliverypoint',
+          'checked_by',
           'orderby/employeeid',
+          'salesman_name',
           'invdate',
           'remarks',
           'gross',
@@ -2515,6 +2552,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       price: price,
       quantity: qty,
       discountPercent: discount,
+      directionStore: itemMap['direction_store']?.toString() ?? '',
+      specialPrice: specialPrice ?? 0,
     );
     await _addItemToOrder(item: item, showSuccessSnack: discount > 0);
 

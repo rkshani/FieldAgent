@@ -218,10 +218,14 @@ class DraftOrderService {
       'goods_agency_name',
       'visit_id',
       'route_id',
+      'city_id',
+      'loc',
       'package_id',
       'package_name',
       'payment_deal_id',
       'delivery_address',
+      'delivery_party_remarks',
+      'delivery_point_remarks',
       'order_remarks',
     };
     final map = <String, dynamic>{};
@@ -241,7 +245,11 @@ class DraftOrderService {
     required int quantity,
     required double unitPrice,
     double discountPercent = 0,
+    String? remarks,
+    String? directionStore,
     String? specialRemarks,
+    double specialPrice = 0,
+    String? subItemId,
   }) async {
     final db = await _db;
     final now = DateTime.now().toIso8601String();
@@ -257,7 +265,11 @@ class DraftOrderService {
       'quantity': quantity,
       'unit_price': unitPrice,
       'discount_percent': discountPercent,
+      'remarks': remarks,
+      'direction_store': directionStore,
       'special_remarks': specialRemarks,
+      'special_price': specialPrice,
+      'subitem_id': subItemId,
       'sort_order': sortOrder,
       'created_at': now,
     });
@@ -327,10 +339,14 @@ class DraftOrderService {
         'goods_agency_name': null,
         'visit_id': null,
         'route_id': null,
+        'city_id': null,
+        'loc': null,
         'package_id': null,
         'package_name': null,
         'payment_deal_id': null,
         'delivery_address': null,
+        'delivery_party_remarks': null,
+        'delivery_point_remarks': null,
         'order_remarks': null,
         'updated_at': now,
       },
@@ -405,18 +421,29 @@ class DraftOrderService {
     final bookingId = await db.insert('bookings', {
       'draft_order_id': draftId,
       'orderby': int.tryParse(empId) ?? 1013,
-      'invdate': invdate ?? _formatInvDate(now),
+      'invdate': invdate,
       'partyid': order.billToPartyId ?? '0',
       'package_id': order.packageId ?? '1',
       'remarks': order.orderRemarks ?? '',
       'status': 1,
       'employeeid': empId,
       'localinvno': localinvno,
-      'deliverypoint': order.deliveryPointName ?? order.deliveryAddress ?? 'Direct to Party (Bilty)',
+      'deliverypoint':
+          order.deliveryPointName ??
+          order.deliveryAddress ??
+          'Direct to Party (Bilty)',
       'isandroid': '1',
       'delivery_party': order.shipToPartyId ?? '0',
       'deal_id': order.paymentDealId ?? '0',
       'goodsagency_id': order.goodsAgencyId ?? '0',
+      'goodsagency_name': order.goodsAgencyName ?? '',
+      'delivery_party_remarks':
+          order.deliveryPartyRemarks ?? order.deliveryAddress ?? '',
+      'delivery_point_remarks': order.deliveryPointRemarks ?? '',
+      'visit_id': order.visitId ?? '',
+      'city_id': order.cityId ?? '',
+      'loc': order.location ?? '',
+      'routeid': order.routeId ?? '',
       'uploaded': 'NO',
       'created_at': now.toIso8601String(),
     });
@@ -431,6 +458,11 @@ class DraftOrderService {
         'quantity': item.quantity,
         'unit_price': item.unitPrice,
         'discount_percent': item.discountPercent,
+        'remarks': item.remarks,
+        'direction_store': item.directionStore,
+        'special_remarks': item.specialRemarks,
+        'special_price': item.specialPrice,
+        'subitem_id': item.subItemId,
         'sort_order': i,
         'created_at': createdAt,
       });
@@ -458,7 +490,9 @@ class DraftOrderService {
   }
 
   /// Returns booking row by draft_order_id.
-  Future<Map<String, dynamic>?> getBookingByDraftOrderId(int draftOrderId) async {
+  Future<Map<String, dynamic>?> getBookingByDraftOrderId(
+    int draftOrderId,
+  ) async {
     final db = await _db;
     final rows = await db.query(
       'bookings',
@@ -502,7 +536,8 @@ class DraftOrderService {
 
     final rows = await db.query(
       'bookings',
-      where: "(uploaded IS NULL OR uploaded != 'YES') AND (employeeid = ? OR ? = '')",
+      where:
+          "(uploaded IS NULL OR uploaded != 'YES') AND (employeeid = ? OR ? = '')",
       whereArgs: [empId, empId],
       orderBy: 'id ASC',
     );

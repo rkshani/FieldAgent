@@ -179,9 +179,7 @@ class _OrdersScreenState extends State<OrdersScreen>
           title: const Text('Upload Final Output'),
           content: SizedBox(
             width: double.maxFinite,
-            child: SingleChildScrollView(
-              child: SelectableText(jsonText),
-            ),
+            child: SingleChildScrollView(child: SelectableText(jsonText)),
           ),
           actions: [
             TextButton(
@@ -220,10 +218,9 @@ class _OrdersScreenState extends State<OrdersScreen>
 
     if (!mounted) return;
 
-    final previewJson = const JsonEncoder.withIndent('  ').convert({
-      'pending_count': pending.length,
-      'uploads': previews,
-    });
+    final previewJson = const JsonEncoder.withIndent(
+      '  ',
+    ).convert({'pending_count': pending.length, 'uploads': previews});
 
     final shouldUpload =
         await showDialog<bool>(
@@ -304,7 +301,10 @@ class _OrdersScreenState extends State<OrdersScreen>
           controller: _tabController,
           indicatorColor: Colors.white,
           labelColor: Colors.white,
-          tabs: const [Tab(text: 'Offline'), Tab(text: 'Online')],
+          tabs: const [
+            Tab(text: 'Offline'),
+            Tab(text: 'Online'),
+          ],
         ),
         actions: [
           IconButton(
@@ -338,7 +338,9 @@ class _OrdersScreenState extends State<OrdersScreen>
                 return const Center(child: CircularProgressIndicator());
               }
               if (snapshot.hasError) {
-                return Center(child: Text('Offline load failed: ${snapshot.error}'));
+                return Center(
+                  child: Text('Offline load failed: ${snapshot.error}'),
+                );
               }
 
               final orders = snapshot.data ?? const <DraftOrderWithItems>[];
@@ -451,7 +453,10 @@ class _OrdersScreenState extends State<OrdersScreen>
               if (_onlineError != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Text(_onlineError!, style: const TextStyle(color: Colors.red)),
+                  child: Text(
+                    _onlineError!,
+                    style: const TextStyle(color: Colors.red),
+                  ),
                 ),
               Expanded(
                 child: _onlineLoading
@@ -479,4 +484,3 @@ class _OrdersScreenState extends State<OrdersScreen>
     );
   }
 }
-
