@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 
+import 'api_endpoints.dart';
 import 'session_service.dart';
 
 /// Dio-based client for Order Add / agent APIs.
@@ -9,18 +10,15 @@ class ApiClient {
 
   static final ApiClient instance = ApiClient._();
 
-  static const String defaultBaseUrl = 'https://www.hisaab.org';
-
-  /// Base for TCL order web APIs (e.g. order_web_api_z.php).
-  static const String androidApiRoot = '/tclorder_apis/';
-
   Dio? _dio;
 
   Dio get dio {
-    _dio ??= Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 30),
-    ));
+    _dio ??= Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 30),
+        receiveTimeout: const Duration(seconds: 30),
+      ),
+    );
     return _dio!;
   }
 
@@ -31,6 +29,6 @@ class ApiClient {
 
   /// Full URL for hisaab.org TCL APIs (goods agency, payment methods, etc.).
   String getTclOrderWebUrl(String path) {
-    return '$defaultBaseUrl$androidApiRoot$path';
+    return ApiEndpoints.tclOrderWeb(path);
   }
 }

@@ -3,25 +3,25 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/user.dart';
+import 'api_config.dart';
+import 'api_endpoints.dart';
 import 'device_info_service.dart';
 import 'local_db_service.dart';
 import 'session_service.dart';
 
 class ApiService {
-  static const String baseUrl = 'https://www.hisaab.org/order/new.php';
+  static const String baseUrl = ApiConfig.orderNewUrl;
   static const String androidApiRoot = '/order_android_api/';
-  static const String fullApiUrl = 'https://www.hisaab.org$androidApiRoot';
+  static const String fullApiUrl = '${ApiConfig.domain}$androidApiRoot';
 
-  /// Login API – same as Android: AnroidAPIroot = /tclorder_apis/
-  static const String loginApiUrl =
-      'https://www.hisaab.org/tclorder_apis/new.php';
+  /// Login API – same as Android: API root = /tclorder_apis_new_test/
+  static const String loginApiUrl = ApiConfig.loginUrl;
 
   /// TCL Local Data APIs (from Local Data Loading spec)
-  static const String tclApiBase = 'https://www.hisaab.org/tclorder_apis/';
+  static const String tclApiBase = ApiConfig.tclApiBase;
 
   /// Parties (and optional others) – use new_test base
-  static const String tclApiBaseNewTest =
-      'https://www.hisaab.org/tclorder_apis_new_test/';
+  static const String tclApiBaseNewTest = ApiConfig.tclApiBaseNewTest;
 
   /// Per-endpoint result: { name, success, count, errorMessage? }
   static Map<String, dynamic> _endpointResult(
@@ -290,8 +290,7 @@ class ApiService {
     {'name': 'Stock Update 2', 'url': 'taj_api.php?getstockupdate2=1'},
   ];
 
-  static const String _goodsAgencyUrl =
-      'https://www.hisaab.org/tclorder_apis/order_web_api_z.php?get_goodsagency=1';
+  static final String _goodsAgencyUrl = ApiEndpoints.goodsAgency();
 
   // Fetch and save all local data from TCL APIs; returns per-endpoint results for dialog.
   static Future<Map<String, dynamic>> fetchAndSaveLocalData() async {
@@ -448,7 +447,7 @@ class ApiService {
   /// Fetches Items API and saves to local_items (for Order Add when cache empty).
   static Future<bool> fetchItemsAndSave(String userId) async {
     try {
-      final url = '${tclApiBaseNewTest}taj_api.php?getItems=1&userid=$userId';
+      final url = ApiEndpoints.itemsNewTest(userId);
       final response = await _getWithRetry(
         Uri.parse(url),
         timeout: const Duration(seconds: 30),
@@ -470,8 +469,7 @@ class ApiService {
   /// Fetches Packages API and saves to local_packages (for Order Add when cache empty).
   static Future<bool> fetchPackagesAndSave(String userId) async {
     try {
-      final url =
-          '${tclApiBaseNewTest}taj_api.php?getPackages=1&userid=$userId';
+      final url = ApiEndpoints.packagesNewTest(userId);
       final response = await _getWithRetry(
         Uri.parse(url),
         timeout: const Duration(seconds: 30),
@@ -496,21 +494,21 @@ class ApiService {
     required String orderItems,
   }) async {
     try {
-      final url = '${tclApiBaseNewTest}taj_api.php?postOrderZ=1';
+      final url = ApiEndpoints.postOrderZNewTest();
 
       final body = {
         'order': orderHeader,
-        // Legacy Android used `item`; keep both for server compatibility.
         'item': orderItems,
-        'items': orderItems,
       };
 
+      String preview(String value, {int max = 100}) {
+        return value.length <= max ? value : value.substring(0, max);
+      }
+
       debugPrint(
-        '[ApiService.postOrder] Uploading order: ${orderHeader.substring(0, 100)}...',
+        '[ApiService.postOrder] Uploading order: ${preview(orderHeader)}...',
       );
-      debugPrint(
-        '[ApiService.postOrder] Items: ${orderItems.substring(0, 100)}...',
-      );
+      debugPrint('[ApiService.postOrder] Items: ${preview(orderItems)}...');
 
       final response = await http
           .post(Uri.parse(url), body: body)
@@ -542,6 +540,10 @@ class ApiService {
 
       try {
         final jsonResponse = jsonDecode(responseBody) as Map<String, dynamic>;
+        final status = jsonResponse['status']?.toString().toLowerCase() ?? '';
+        if (status == 'true' || status == '1') {
+          return {...jsonResponse, 'status': 'success'};
+        }
         return jsonResponse;
       } catch (e) {
         // If response is not JSON, check if it's a simple status string
@@ -559,94 +561,77 @@ class ApiService {
     }
   }
 
-  /// Testing utility: fetch created orders from server with endpoint fallbacks.
-  static Future<Map<String, dynamic>>
-  fetchOnlineCreatedOrdersForTesting() async {
+  /// Fetch my orders from server.
+  /// GET /tclorder_apis_new_test/order_web_api_z.php?get_my_orders=1&employeeid={id}
+  static Future<Map<String, dynamic>> fetchMyOrders() async {
     try {
-      final userId = await SessionService.getUserId();
       final employeeId = await SessionService.getEmployeeId();
-      final uid = (userId ?? employeeId)?.toString();
-      if (uid == null || uid.isEmpty) {
+      if (employeeId == null) {
         return {
           'success': false,
-          'message': 'No logged-in user id found',
+          'message': 'No logged-in employee id found',
           'endpoint': null,
           'orders': <Map<String, dynamic>>[],
           'raw': null,
         };
       }
 
-      final base = (await SessionService.getStaticIP()).replaceAll(
-        RegExp(r'/$'),
-        '',
-      );
-      final candidates = <String>[
-        '$base/tclorder_apis/taj_api.php?getMyOrders=1&userid=$uid',
-        '$base/tclorder_apis/taj_api.php?getmyorders=1&userid=$uid',
-        '$base/tclorder_apis/taj_api.php?myOrders=1&userid=$uid',
-        '$base/tclorder_apis/order_web_api_z.php?get_orders=1&userid=$uid',
-        '${tclApiBaseNewTest}taj_api.php?getMyOrders=1&userid=$uid',
-        '${tclApiBaseNewTest}taj_api.php?getmyorders=1&userid=$uid',
-      ];
+      // Try taj_api.php first (same file that receives postOrderZ uploads)
+      // If that returns empty/fails, fall back to order_web_api_z.php
+      final urlTaj = ApiEndpoints.myOrdersTajApi(employeeId.toString());
+      final urlLegacy = ApiEndpoints.myOrders(employeeId.toString());
 
-      String? lastError;
-      String? bestEndpoint;
-      String? bestRaw;
-      List<Map<String, dynamic>> bestOrders = const [];
-
-      for (final url in candidates) {
+      for (final url in [urlTaj, urlLegacy]) {
+        debugPrint('[fetchMyOrders] GET $url');
         try {
           final response = await _getWithRetry(
             Uri.parse(url),
             timeout: const Duration(seconds: 30),
-            maxAttempts: 1,
           );
+
           if (response.statusCode != 200) {
-            lastError = 'HTTP ${response.statusCode} at $url';
+            debugPrint(
+              '[fetchMyOrders] $url returned ${response.statusCode}, trying next...',
+            );
             continue;
           }
 
-          final raw = response.body;
-          final parsed = _extractOrdersFromPayload(raw);
-          bestEndpoint = url;
-          bestRaw = raw;
-          bestOrders = parsed;
+          final raw = response.body.trim();
+          if (raw.isEmpty) {
+            debugPrint('[fetchMyOrders] $url returned empty, trying next...');
+            continue;
+          }
 
-          if (parsed.isNotEmpty) {
+          final parsed = _extractOrdersFromPayload(raw);
+          debugPrint('[fetchMyOrders] $url parsed ${parsed.length} orders');
+
+          if (parsed.isNotEmpty || url == urlLegacy) {
             return {
               'success': true,
               'message': 'Orders fetched successfully',
-              'endpoint': bestEndpoint,
-              'orders': bestOrders,
-              'raw': bestRaw,
+              'endpoint': url,
+              'orders': parsed,
+              'raw': raw,
             };
           }
         } catch (e) {
-          lastError = e.toString();
+          debugPrint('[fetchMyOrders] $url error: $e, trying next...');
+          continue;
         }
-      }
-
-      if (bestEndpoint != null) {
-        return {
-          'success': true,
-          'message': 'Endpoint reachable but no orders parsed',
-          'endpoint': bestEndpoint,
-          'orders': bestOrders,
-          'raw': bestRaw,
-        };
       }
 
       return {
         'success': false,
-        'message': lastError ?? 'Unable to fetch online orders',
-        'endpoint': null,
+        'message': 'No orders found on any endpoint',
+        'endpoint': urlLegacy,
         'orders': <Map<String, dynamic>>[],
         'raw': null,
       };
     } catch (e) {
+      debugPrint('[fetchMyOrders] error: $e');
       return {
         'success': false,
-        'message': 'Online orders fetch error: $e',
+        'message': 'Error: $e',
         'endpoint': null,
         'orders': <Map<String, dynamic>>[],
         'raw': null,
@@ -657,6 +642,9 @@ class ApiService {
   static List<Map<String, dynamic>> _extractOrdersFromPayload(String raw) {
     try {
       final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic> && _looksLikeOrder(decoded)) {
+        return [decoded];
+      }
       final list = _extractList(decoded);
       return list
           .whereType<Map>()
@@ -691,5 +679,21 @@ class ApiService {
       }
     }
     return const [];
+  }
+
+  static bool _looksLikeOrder(Map<String, dynamic> row) {
+    const keys = <String>{
+      'order_id',
+      'id',
+      'party_name',
+      'package_name',
+      'created_at',
+      'date',
+      'net_total',
+    };
+    for (final key in keys) {
+      if (row.containsKey(key)) return true;
+    }
+    return false;
   }
 }

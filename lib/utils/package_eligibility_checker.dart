@@ -1,4 +1,6 @@
-/// Package eligibility checker matching Android logic
+import 'package:flutter/foundation.dart';
+
+/// Package eligibility checker matching legacy Android logic.
 /// Android methods: pkgAllowed, pkgNotAllowed
 class PackageEligibilityChecker {
   /// Check if package is allowed for the user/party combination
@@ -11,34 +13,36 @@ class PackageEligibilityChecker {
     required String partyId,
     required String userId,
   }) {
-    // Extract eligibility fields
     final partiesAllowed = package['parties_allowed']?.toString() ?? '';
-    final usersActive = package['users_active']?.toString() ?? '';
+    final usersActive = package['users_active']?.toString() ?? '0';
     final allowedUsers = package['allowed_users']?.toString() ?? '';
 
-    // If no party restriction, check user eligibility only
-    if (partiesAllowed.isEmpty) {
-      return _checkUserEligibility(
-        usersActive: usersActive,
-        allowedUsers: allowedUsers,
-        userId: userId,
-      );
+    // Legacy party behavior:
+    // - empty parties_allowed => party is allowed
+    // - non-empty => selected party must exist in the list
+    if (partiesAllowed.trim().isNotEmpty) {
+      final partyList = partiesAllowed
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toSet();
+      if (!partyList.contains(partyId.trim())) {
+        debugPrint(
+          '[PackageEligibility] blocked by party package=${package['packageid'] ?? package['id']} party=$partyId',
+        );
+        return false;
+      }
     }
 
-    // Check if party is in allowed list
-    final partyList = partiesAllowed.split(',').map((e) => e.trim()).toList();
-    final partyAllowed = partyList.contains(partyId);
-
-    if (!partyAllowed) {
-      return false; // Party not in allowed list
-    }
-
-    // Party is allowed, now check user
-    return _checkUserEligibility(
+    final allowed = _checkUserEligibility(
       usersActive: usersActive,
       allowedUsers: allowedUsers,
       userId: userId,
     );
+    debugPrint(
+      '[PackageEligibility] package=${package['packageid'] ?? package['id']} party=$partyId user=$userId users_active=$usersActive allowed_users="$allowedUsers" allowed=$allowed',
+    );
+    return allowed;
   }
 
   /// Check user eligibility based on users_active and allowed_users
@@ -47,16 +51,28 @@ class PackageEligibilityChecker {
     required String allowedUsers,
     required String userId,
   }) {
-    // If users_active is "1", check allowed_users list
-    if (usersActive == '1') {
-      if (allowedUsers.isEmpty) {
-        return false; // Active user restriction but no users specified
-      }
-      final userList = allowedUsers.split(',').map((e) => e.trim()).toList();
-      return userList.contains(userId);
+    final normalizedUserId = userId.trim();
+    final userList = allowedUsers
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet();
+
+    // Legacy Android parity (intentionally odd):
+    // users_active == "0": allowed_users is block-list
+    if (usersActive.trim() == '0') {
+      if (userList.isEmpty) return true;
+      if (userList.contains(normalizedUserId)) return false;
+      return true;
     }
 
-    // No user restriction
+    // users_active == "1": allowed_users is whitelist
+    if (usersActive.trim() == '1') {
+      if (userList.isEmpty) return false;
+      return userList.contains(normalizedUserId);
+    }
+
+    // Defensive fallback for malformed users_active values.
     return true;
   }
 
@@ -67,23 +83,31 @@ class PackageEligibilityChecker {
     required String userId,
   }) {
     final partiesAllowed = package['parties_allowed']?.toString() ?? '';
-    final usersActive = package['users_active']?.toString() ?? '';
+    final usersActive = package['users_active']?.toString() ?? '0';
     final allowedUsers = package['allowed_users']?.toString() ?? '';
 
     if (partiesAllowed.isNotEmpty) {
       final partyList = partiesAllowed.split(',').map((e) => e.trim()).toList();
       if (!partyList.contains(partyId)) {
-        return 'This package is not available for the selected party.';
+        return 'Package not allowed to you, Please select another package';
       }
     }
 
-    if (usersActive == '1') {
-      if (allowedUsers.isEmpty) {
-        return 'This package requires user authorization.';
+    final userList = allowedUsers
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet();
+    final normalizedUserId = userId.trim();
+
+    if (usersActive.trim() == '0') {
+      if (userList.isNotEmpty && userList.contains(normalizedUserId)) {
+        return 'Package not allowed to you, Please select another package';
       }
-      final userList = allowedUsers.split(',').map((e) => e.trim()).toList();
-      if (!userList.contains(userId)) {
-        return 'You are not authorized to use this package.';
+    }
+    if (usersActive.trim() == '1') {
+      if (userList.isEmpty || !userList.contains(normalizedUserId)) {
+        return 'Package not allowed to you, Please select another package';
       }
     }
 

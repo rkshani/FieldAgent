@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/payment_method.dart';
 import 'api_client.dart';
+import 'api_endpoints.dart';
 
 /// Fetches payment methods for a party when package rules require payment deal.
 /// Android: getPaymentMethods(partyId)
@@ -12,14 +13,14 @@ class PaymentDealService {
 
   static final PaymentDealService instance = PaymentDealService._();
 
-  /// Path and param: Android format /tclorder_apis/app_web_api.php?get_payment_deals=1&partyid=
+  /// Path and param: API format /tclorder_apis_new_test/app_web_api.php?get_payment_deals=1&partyid=
   static String path(String partyId) =>
       'app_web_api.php?get_payment_deals=1&partyid=$partyId';
 
   /// Fetches payment methods for the given party. Returns list of PaymentMethod objects.
   Future<List<PaymentMethod>> getPaymentMethods(String partyId) async {
     try {
-      final url = ApiClient.instance.getTclOrderWebUrl(path(partyId));
+      final url = ApiEndpoints.paymentDeals(partyId);
       final response = await ApiClient.instance.dio.get<String>(url);
       if (response.statusCode == 200 &&
           response.data != null &&
@@ -29,9 +30,7 @@ class PaymentDealService {
           return d
               .map(
                 (e) => PaymentMethod.fromJson(
-                  e is Map
-                      ? Map<String, dynamic>.from(e as Map)
-                      : <String, dynamic>{},
+                  e is Map ? Map<String, dynamic>.from(e) : <String, dynamic>{},
                 ),
               )
               .toList();

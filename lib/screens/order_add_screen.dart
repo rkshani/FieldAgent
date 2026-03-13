@@ -20,6 +20,7 @@ import '../services/draft_order_service.dart';
 import '../services/payment_deal_service.dart';
 import '../services/already_added_item_service.dart';
 import '../services/visit_service.dart';
+import '../services/order_package_pricing_service.dart';
 import '../utils/order_search_util.dart';
 import '../utils/order_upload_formatter.dart';
 import '../utils/package_eligibility_checker.dart';
@@ -33,6 +34,7 @@ class OrderAddScreen extends StatefulWidget {
 
 class _OrderAddScreenState extends State<OrderAddScreen> {
   static const int _primaryColor = 0xFF2563EB;
+  static const bool _uploadOnFinalize = false;
 
   final TextEditingController _qtyController = TextEditingController();
   final TextEditingController _specialRemarksController =
@@ -40,6 +42,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   final TextEditingController _specialPriceController = TextEditingController();
   final TextEditingController _deliveryAddressController =
       TextEditingController();
+
+  // Per-item inline qty editing controllers (keyed by InvoiceItem.id)
+  final Map<String, TextEditingController> _itemQtyControllers = {};
 
   // Item price display
   String _selectedItemPrice = '';
@@ -54,6 +59,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   final Map<String, double> _itemPackagePrices =
       {}; // bookid -> calculated price
   final Map<String, double> _itemDiscounts = {}; // bookid -> discount %
+  final Map<String, PackagePricingResult> _itemPricingResults = {};
 
   bool _loading = true;
   bool _fetchingFromApi = false;
@@ -136,6 +142,36 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   String get _selectedPartyId =>
       _selectedParty?['partyid']?.toString().trim() ?? '';
 
+  String get _paymentDealLookupPartyId {
+    final shipToId = (_selectedShipToPartyId ?? '').trim();
+    if (shipToId.isNotEmpty && shipToId != '0') {
+      return shipToId;
+    }
+    return _selectedPartyId;
+  }
+
+  bool get _isPaymentDealRequiredForSelectedPackage {
+    return OrderPackagePricingService.isPaymentDealRequired(_selectedPackage);
+  }
+
+  bool get _isPaymentDealStateResolved {
+    if (!_isPaymentDealRequiredForSelectedPackage) return true;
+    if (_paymentMethods.isEmpty) return false;
+    final selected = (_selectedPaymentDealId ?? '').trim();
+    if (selected.isEmpty) return false;
+    return _paymentMethods.any(
+      (m) => (m.id ?? '').toString().trim() == selected,
+    );
+  }
+
+  Map<String, dynamic>? _findItemMapById(String id) {
+    for (final item in _items) {
+      final itemId = OrderPackagePricingService.itemIdFromMap(item);
+      if (itemId == id) return item;
+    }
+    return null;
+  }
+
   String get _currentOrderIdForDisplay {
     if (_currentOrderSerialNo != null) {
       return _currentOrderSerialNo.toString();
@@ -148,10 +184,14 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   }
 
   String get _currentOrderIdForUpload {
-    if (_currentLocalOrderId != null && _currentLocalOrderId!.isNotEmpty) {
-      return _currentLocalOrderId!;
+    // CRITICAL: Android expects numeric DB ID, NOT UUID
+    // 1. Prefer orderSerialNo (numeric local DB id, matches Android getId())
+    if (_currentOrderSerialNo != null) {
+      return _currentOrderSerialNo.toString();
     }
+    // 2. Fallback to draftId if available
     if (_currentDraftId != null) return _currentDraftId.toString();
+    // 3. Last resort: timestamp (should not reach here if draft is active)
     return DateTime.now().millisecondsSinceEpoch.toString();
   }
 
@@ -201,8 +241,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       {
         'type': _shipToDirect,
         'ship_to_party_id': '0',
-        'delivery_party_name': 'Direct to Party',
-        'display': 'Direct to Party _ 0',
+        'delivery_party_name': 'Direct to Party (Bilty)',
+        'display': 'Direct to Party (Bilty) _ 0',
       },
       {
         'type': _shipToUnavailable,
@@ -267,6 +307,10 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         _showManualDeliveryAddressField = false;
         _deliveryAddressController.clear();
       }
+
+      if (shipToChanged) {
+        _selectedPaymentDealId = null;
+      }
     });
 
     DraftOrderProvider? draftProvider;
@@ -282,6 +326,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         shipToName.isEmpty ? null : shipToName,
       );
     }
+
+    await _loadPaymentMethodsForCurrentContext();
 
     await _saveDraft();
   }
@@ -640,12 +686,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
     _loadingPartyDependencies = true;
     try {
-      final paymentMethodsFuture = PaymentDealService.instance
-          .getPaymentMethods(partyId);
       final alreadyAddedFuture = AlreadyAddedItemService.instance
           .getAlreadyAddedItems();
 
-      final paymentMethods = await paymentMethodsFuture;
       final alreadyAdded = await alreadyAddedFuture;
 
       final filteredPackages = _filterPackagesForParty(
@@ -656,25 +699,65 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       if (!mounted) return;
 
       setState(() {
-        _paymentMethods = paymentMethods;
         _alreadyAddedItems = alreadyAdded;
         _packages = filteredPackages;
       });
 
       _ensurePackageSelectionStillValid();
       await _refreshSelectedPackagePricingIfNeeded();
-      final selectedPackage = _selectedPackage;
-      if (selectedPackage != null &&
-          PaymentDealService.instance.isPaymentDealRequired(selectedPackage) &&
-          _selectedPaymentDealId == null &&
-          _paymentMethods.isNotEmpty) {
-        _selectedPaymentDealId = _paymentMethods.first.id?.toString();
-      }
+      await _loadPaymentMethodsForCurrentContext();
     } catch (e) {
       debugPrint('[OrderAdd] Failed party dependent reload: $e');
     } finally {
       _loadingPartyDependencies = false;
     }
+  }
+
+  Future<void> _loadPaymentMethodsForCurrentContext() async {
+    final package = _selectedPackage;
+    if (!OrderPackagePricingService.isPaymentDealRequired(package)) {
+      if (mounted) {
+        setState(() {
+          _paymentMethods = [];
+          _selectedPaymentDealId = null;
+        });
+      }
+      debugPrint('[OrderAdd] scheme!=2 payment deal not required, state reset');
+      return;
+    }
+
+    final lookupPartyId = _paymentDealLookupPartyId;
+    if (lookupPartyId.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _paymentMethods = [];
+          _selectedPaymentDealId = null;
+        });
+      }
+      debugPrint('[OrderAdd] payment deal required but lookup party is empty');
+      return;
+    }
+
+    final methods = await PaymentDealService.instance.getPaymentMethods(
+      lookupPartyId,
+    );
+    if (!mounted) return;
+
+    setState(() {
+      _paymentMethods = methods;
+      final hasExisting = methods.any(
+        (m) => (m.id ?? '').toString().trim() == (_selectedPaymentDealId ?? ''),
+      );
+      if (!hasExisting) {
+        _selectedPaymentDealId = methods.isNotEmpty
+            ? methods.first.id?.toString().trim()
+            : null;
+      }
+    });
+
+    debugPrint(
+      '[OrderAdd] payment deal load required=true lookupParty=$lookupPartyId methods=${methods.length} selected=$_selectedPaymentDealId',
+    );
   }
 
   void _clearSelectedItemSelection() {
@@ -689,6 +772,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       _selectedPackageIndex = null;
       _itemPackagePrices.clear();
       _itemDiscounts.clear();
+      _itemPricingResults.clear();
       changed = true;
       if (changed && mounted) {
         setState(() {});
@@ -700,6 +784,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       _selectedPackageIndex = null;
       _itemPackagePrices.clear();
       _itemDiscounts.clear();
+      _itemPricingResults.clear();
       _clearSelectedItemSelection();
       changed = true;
       if (changed && mounted) {
@@ -718,6 +803,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       _selectedPackageIndex = null;
       _itemPackagePrices.clear();
       _itemDiscounts.clear();
+      _itemPricingResults.clear();
       _clearSelectedItemSelection();
       changed = true;
     }
@@ -732,6 +818,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     if (package == null) {
       _itemPackagePrices.clear();
       _itemDiscounts.clear();
+      _itemPricingResults.clear();
       return;
     }
 
@@ -740,6 +827,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     if (packageId.isEmpty) {
       _itemPackagePrices.clear();
       _itemDiscounts.clear();
+      _itemPricingResults.clear();
       return;
     }
     await _calculateItemPricesForPackage(packageId);
@@ -946,6 +1034,10 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       return;
     }
 
+    if (!_ensurePaymentDealResolvedForItemEntry()) {
+      return;
+    }
+
     final selected = await _showSearchSelectionDialog(
       title: 'Select Item',
       rows: _items,
@@ -967,26 +1059,27 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         selectedItem['bookid']?.toString() ??
         selectedItem['id']?.toString() ??
         '';
-    final price = _getItemPackagePrice(selectedItem);
-    final discount = _getItemDiscount(selectedItem);
-    final basePrice = _getBaseItemPriceForSelectedPackage(
-      selectedItem,
-      _selectedPackage,
-    );
+    final result = _resolveItemPricing(item: selectedItem, quantity: 1);
+    final price = result.finalPrice;
+    final discount = result.discountPercent;
 
-    _logPriceResolution(
-      item: selectedItem,
-      selectedPackage: _selectedPackage,
-      basePrice: basePrice,
-      finalPrice: price,
-      discount: discount,
-    );
+    if (!result.allowed) {
+      _selectedItemPrice = '';
+      _specialPriceController.clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.reason ?? 'Item Not Allowed'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
 
     // Android parity: validate price (reject "no price" items)
     if (price <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${itemDisplay(selectedItem)} has no price available'),
+          content: const Text('Item Not Allowed'),
           backgroundColor: Colors.red,
         ),
       );
@@ -1016,9 +1109,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       // Show price with discount info
       if (discount > 0) {
         _selectedItemPrice =
-            'Rs. ${price.toStringAsFixed(2)} (Discount: ${discount.toStringAsFixed(1)}%)';
+            'Rs : ${price.toStringAsFixed(2)} _ Discount : ${discount.toStringAsFixed(1)}%';
       } else {
-        _selectedItemPrice = 'Rs. ${price.toStringAsFixed(2)}';
+        _selectedItemPrice = 'Rs : ${price.toStringAsFixed(2)}';
       }
     });
   }
@@ -1122,6 +1215,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         _clearSelectedItemSelection();
         _itemPackagePrices.clear();
         _itemDiscounts.clear();
+        _itemPricingResults.clear();
+        _selectedPaymentDealId = null;
+        _paymentMethods = [];
       });
       _recalculateTotals();
       await _saveDraft();
@@ -1246,10 +1342,23 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         partyId: _selectedPartyId,
         userId: _currentUserId?.toString() ?? '',
       );
+      setState(() {
+        _selectedPackageIndex = null;
+        _selectedPaymentDealId = null;
+        _paymentMethods = [];
+        _itemPackagePrices.clear();
+        _itemDiscounts.clear();
+        _itemPricingResults.clear();
+        _clearSelectedItemSelection();
+      });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(reason.isEmpty ? 'Package not allowed' : reason),
+            content: Text(
+              reason.isEmpty
+                  ? 'Package not allowed to you, Please select another package'
+                  : reason,
+            ),
             backgroundColor: Colors.orange,
           ),
         );
@@ -1270,11 +1379,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       await _calculateItemPricesForPackage(packageId);
     }
 
-    if (!PaymentDealService.instance.isPaymentDealRequired(selectedPackage)) {
-      _selectedPaymentDealId = null;
-    } else if (_selectedPaymentDealId == null && _paymentMethods.isNotEmpty) {
-      _selectedPaymentDealId = _paymentMethods.first.id?.toString();
-    }
+    await _loadPaymentMethodsForCurrentContext();
 
     _recalculateTotals();
     if (persistDraft) {
@@ -1482,94 +1587,63 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     };
   }
 
-  Future<void> _showOrderRemarksDialog() async {
-    final remarksController = TextEditingController(
-      text: _specialRemarksController.text,
-    );
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Order Remarks'),
-          content: TextField(
-            controller: remarksController,
-            minLines: 3,
-            maxLines: 5,
-            decoration: const InputDecoration(
-              hintText: 'Write remarks for this order',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(null),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(''),
-              child: const Text('Clear'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(
-                dialogContext,
-              ).pop(remarksController.text.trim()),
-              child: const Text('Save'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (!mounted || result == null) return;
-
-    setState(() {
-      _specialRemarksController.text = result;
-    });
-    await _saveDraft(syncItems: false);
-  }
-
   Future<void> _saveDraft({bool syncItems = false}) async {
     if (_savingDraft) return;
     _savingDraft = true;
     try {
       final current = await DraftOrderService.instance.getCurrentDraft();
-      if (current == null) return;
+      if (current == null) {
+        debugPrint('[OrderAdd] _saveDraft: No draft found!');
+        return;
+      }
 
       _currentDraftId = current.order.id;
       _currentOrderSerialNo = current.order.orderSerialNo;
       _currentLocalOrderId = current.order.localOrderId;
 
       final header = _buildCurrentDraftOrder();
-      if (!syncItems) {
-        await DraftOrderService.instance.updateDraftHeader(
-          _currentDraftId!,
-          header,
-        );
-      } else {
-        await DraftOrderService.instance.resetDraft(_currentDraftId!);
-        await DraftOrderService.instance.updateDraftHeader(
-          _currentDraftId!,
-          header,
-        );
 
-        final provider = context.read<InvoiceProvider>();
-        for (final item in provider.items) {
-          await DraftOrderService.instance.insertLineItem(
-            draftOrderId: _currentDraftId!,
-            itemId: item.id,
-            itemName: item.name,
-            quantity: item.quantity,
-            unitPrice: item.price,
-            discountPercent: item.discountPercent,
-            specialRemarks: _specialRemarksController.text.trim().isEmpty
-                ? null
-                : _specialRemarksController.text.trim(),
-          );
-        }
+      // Always update header
+      await DraftOrderService.instance.updateDraftHeader(
+        _currentDraftId!,
+        header,
+      );
+
+      // CRITICAL: Only clear line items, never clear header (resetDraft wipes party/package).
+      // Full and incremental sync both replace items only so draft header is preserved.
+      if (syncItems) {
+        debugPrint('[OrderAdd] _saveDraft: Full sync (syncItems=true)');
+      } else {
+        debugPrint('[OrderAdd] _saveDraft: Incremental sync (syncItems=false)');
       }
+      await DraftOrderService.instance.deleteAllLineItems(_currentDraftId!);
+
+      // Insert current items from InvoiceProvider into database
+      final provider = context.read<InvoiceProvider>();
+      debugPrint(
+        '[OrderAdd] _saveDraft: Inserting ${provider.items.length} items into draft $_currentDraftId',
+      );
+
+      for (final item in provider.items) {
+        debugPrint(
+          '[OrderAdd] _saveDraft: Inserting item: ${item.name} x${item.quantity}',
+        );
+        await DraftOrderService.instance.insertLineItem(
+          draftOrderId: _currentDraftId!,
+          itemId: item.id,
+          itemName: item.name,
+          quantity: item.quantity,
+          unitPrice: item.price,
+          discountPercent: item.discountPercent,
+          specialRemarks:
+              null, // Per-item remarks (currently not supported in UI)
+        );
+      }
+      debugPrint(
+        '[OrderAdd] _saveDraft: Successfully saved draft with ${provider.items.length} items',
+      );
     } catch (e) {
-      debugPrint('[OrderAdd] Failed to save draft: $e');
+      debugPrint('[OrderAdd] _saveDraft: ERROR - $e');
     } finally {
       _savingDraft = false;
     }
@@ -1695,369 +1769,101 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   static String agencyDisplay(Map<String, dynamic> m) =>
       _mapDisplay(m, ['name', 'agency_name', 'AgencyName', 'title']);
 
-  double? _toDouble(dynamic value) {
-    if (value == null) return null;
-    if (value is num) return value.toDouble();
-    final text = value.toString().trim();
-    if (text.isEmpty) return null;
-    return double.tryParse(text);
-  }
-
-  DateTime? _tryParseDate(String? value) {
-    if (value == null || value.trim().isEmpty) return null;
-    final v = value.trim();
-    for (final format in const [
-      'yyyy-MM-dd',
-      'dd-MM-yyyy',
-      'MM-dd-yyyy',
-      'dd/MM/yyyy',
-      'MM/dd/yyyy',
-      'yyyy/MM/dd',
-      'dd-MMM-yyyy',
-    ]) {
-      try {
-        return DateFormat(format).parseStrict(v);
-      } catch (_) {}
-    }
-    return DateTime.tryParse(v);
-  }
-
-  String _normalizedItemId(Map<String, dynamic> item) {
-    return item['bookid']?.toString().trim() ??
-        item['id']?.toString().trim() ??
-        '';
-  }
-
-  String _selectedPackageCountryId(Map<String, dynamic>? selectedPackage) {
-    if (selectedPackage == null) return '';
-    return selectedPackage['country_id']?.toString().trim() ??
-        selectedPackage['countryid']?.toString().trim() ??
-        selectedPackage['country']?.toString().trim() ??
-        '';
-  }
-
-  Map<String, double> _parseAllPricesMap(String rawAllPrices) {
-    final result = <String, double>{};
-    final raw = rawAllPrices.trim();
-    if (raw.isEmpty) return result;
-
-    // Common Android payload pattern: "countryId-price" style pairs in one string.
-    final pairRegex = RegExp(
-      r'([A-Za-z0-9]+)\s*[:=_\-/]\s*([0-9]+(?:\.[0-9]+)?)',
+  PackagePricingResult _resolveItemPricing({
+    required Map<String, dynamic> item,
+    required int quantity,
+    List<InvoiceItem>? cartItems,
+  }) {
+    final provider = context.read<InvoiceProvider>();
+    final result = OrderPackagePricingService.resolveItemPricing(
+      package: _selectedPackage,
+      item: item,
+      quantity: quantity,
+      packageDetails1: _packageDetails1,
+      packageDetails2: _packageDetails2,
+      cartItems: cartItems ?? provider.items,
     );
-    for (final match in pairRegex.allMatches(raw)) {
-      final key = match.group(1)?.trim() ?? '';
-      final value = _toDouble(match.group(2));
-      if (key.isNotEmpty && value != null && value > 0) {
-        result[key] = value;
-      }
+    final id = OrderPackagePricingService.itemIdFromMap(item);
+    if (id.isNotEmpty) {
+      _itemPricingResults[id] = result;
     }
-    if (result.isNotEmpty) return result;
-
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        decoded.forEach((key, value) {
-          final p = _toDouble(value);
-          if (p != null && p > 0) {
-            result[key.toString().trim()] = p;
-          }
-        });
-        if (result.isNotEmpty) return result;
-      }
-      if (decoded is List) {
-        for (final entry in decoded) {
-          if (entry is Map) {
-            final key =
-                entry['country_id']?.toString().trim() ??
-                entry['countryid']?.toString().trim() ??
-                entry['country']?.toString().trim() ??
-                entry['id']?.toString().trim() ??
-                '';
-            final p = _toDouble(
-              entry['price'] ??
-                  entry['rate'] ??
-                  entry['value'] ??
-                  entry['amount'],
-            );
-            if (key.isNotEmpty && p != null && p > 0) {
-              result[key] = p;
-            }
-          } else {
-            final p = _toDouble(entry);
-            if (p != null && p > 0) {
-              result['default'] = p;
-            }
-          }
-        }
-        if (result.isNotEmpty) return result;
-      }
-    } catch (_) {
-      // Non-JSON string format is expected for many Android payloads.
-    }
-
-    final entries = raw.split(RegExp(r'[|;,#~]'));
-    for (final entry in entries) {
-      final token = entry.trim();
-      if (token.isEmpty) continue;
-
-      final keyValue = token.split(RegExp(r'[:=_-]'));
-      if (keyValue.length >= 2) {
-        final key = keyValue.first.trim();
-        final valuePart = keyValue.sublist(1).join('').trim();
-        final p = _toDouble(valuePart);
-        if (key.isNotEmpty && p != null && p > 0) {
-          result[key] = p;
-          continue;
-        }
-      }
-
-      final p = _toDouble(token);
-      if (p != null && p > 0) {
-        result['default'] = p;
-      }
-    }
-
     return result;
   }
 
-  void _logPriceResolution({
-    required Map<String, dynamic> item,
-    required Map<String, dynamic>? selectedPackage,
-    required double basePrice,
-    required double finalPrice,
-    required double discount,
-  }) {
-    if (!kDebugMode) return;
-
-    final itemId = _normalizedItemId(item);
-    final itemName = itemDisplay(item);
-    final packageId =
-        selectedPackage?['packageid']?.toString() ??
-        selectedPackage?['id']?.toString() ??
-        'none';
-    final countryId = _selectedPackageCountryId(selectedPackage);
-    final rawAllPrices = item['allprices']?.toString() ?? '';
-
-    debugPrint(
-      '[OrderAdd][Price] item=$itemId "$itemName" pkg=$packageId country=$countryId '
-      'base=${basePrice.toStringAsFixed(2)} final=${finalPrice.toStringAsFixed(2)} '
-      'discount=${discount.toStringAsFixed(2)} allprices="$rawAllPrices"',
-    );
-  }
-
-  double _getBaseItemPriceForSelectedPackage(
-    Map<String, dynamic> item,
-    Map<String, dynamic>? selectedPackage,
-  ) {
-    final countryId = _selectedPackageCountryId(selectedPackage);
-    final allPricesRaw = item['allprices']?.toString() ?? '';
-    final allPricesMap = _parseAllPricesMap(allPricesRaw);
-
-    if (countryId.isNotEmpty && allPricesMap.containsKey(countryId)) {
-      return allPricesMap[countryId]!;
+  bool _ensurePaymentDealResolvedForItemEntry() {
+    if (!_isPaymentDealRequiredForSelectedPackage) {
+      return true;
     }
-
-    // Secondary fallback in case country id format differs between payloads.
-    final normalizedCountryId = countryId.replaceAll(
-      RegExp(r'[^0-9A-Za-z]'),
-      '',
-    );
-    if (normalizedCountryId.isNotEmpty) {
-      for (final entry in allPricesMap.entries) {
-        final normalizedKey = entry.key.replaceAll(RegExp(r'[^0-9A-Za-z]'), '');
-        if (normalizedKey == normalizedCountryId) {
-          return entry.value;
-        }
-      }
+    if (_paymentMethods.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No payment deal available for selected party/ship-to'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return false;
     }
-
-    if (allPricesMap['default'] != null) {
-      return allPricesMap['default']!;
+    if (!_isPaymentDealStateResolved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a valid payment deal first'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return false;
     }
-
-    // Final fallback: normalized item default price.
-    final itemDefaultPrice = _itemPrice(item);
-    if (itemDefaultPrice > 0) {
-      return itemDefaultPrice;
-    }
-    return 0;
-  }
-
-  bool _isItemInPackageGroup({
-    required String packageId,
-    required String groupId,
-    required String itemId,
-  }) {
-    if (packageId.isEmpty || groupId.isEmpty || itemId.isEmpty) return false;
-    for (final group in _packageDetails2) {
-      if (group.packageId != packageId) continue;
-      if ((group.groupId ?? '').trim() != groupId.trim()) continue;
-      final list = (group.items ?? '')
-          .split(RegExp(r'[|,\s]+'))
-          .map((e) => e.trim())
-          .where((e) => e.isNotEmpty)
-          .toSet();
-      if (list.contains(itemId)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  bool _isRuleApplicable({
-    required PackageDetails1 rule,
-    required String packageId,
-    required String itemId,
-    required int quantity,
-    required double orderAmount,
-    required DateTime now,
-  }) {
-    if ((rule.packageId ?? '').trim() != packageId.trim()) return false;
-
-    final ruleItemId = (rule.itemId ?? '').trim();
-    final ruleGroupId = (rule.groupId ?? '').trim();
-    final byItem = ruleItemId.isNotEmpty && ruleItemId == itemId;
-    final byGroup =
-        ruleGroupId.isNotEmpty &&
-        _isItemInPackageGroup(
-          packageId: packageId,
-          groupId: ruleGroupId,
-          itemId: itemId,
-        );
-
-    if (!byItem && !byGroup) return false;
-
-    final minQty = int.tryParse((rule.minQty ?? '').trim());
-    final maxQty = int.tryParse((rule.maxQty ?? '').trim());
-    if (minQty != null && quantity < minQty) return false;
-    if (maxQty != null && quantity > maxQty) return false;
-
-    final minAmt = _toDouble(rule.minAmt);
-    final maxAmt = _toDouble(rule.maxAmt);
-    if (minAmt != null && orderAmount < minAmt) return false;
-    if (maxAmt != null && orderAmount > maxAmt) return false;
-
-    final start = _tryParseDate(rule.startDate);
-    final end = _tryParseDate(rule.endDate);
-    if (start != null && now.isBefore(start)) return false;
-    if (end != null && now.isAfter(end)) return false;
-
     return true;
   }
 
-  Map<String, double> _applyPackageRulePriceIfAny({
-    required Map<String, dynamic> item,
-    required Map<String, dynamic>? selectedPackage,
-    required double basePrice,
-    int quantity = 1,
-    double? orderAmount,
-    DateTime? now,
-  }) {
-    final packageId =
-        selectedPackage?['packageid']?.toString().trim() ??
-        selectedPackage?['id']?.toString().trim() ??
-        '';
-    final itemId = _normalizedItemId(item);
-    if (packageId.isEmpty || itemId.isEmpty) {
-      return {'price': basePrice, 'discount': 0};
+  Future<void> _recalculateGroupwiseCartItems({String reason = ''}) async {
+    final provider = context.read<InvoiceProvider>();
+    if (provider.items.isEmpty) return;
+
+    final itemById = <String, Map<String, dynamic>>{};
+    for (final item in _items) {
+      final id = OrderPackagePricingService.itemIdFromMap(item);
+      if (id.isNotEmpty) {
+        itemById[id] = item;
+      }
     }
 
-    // Keep helper context-free; callers can provide current order amount.
-    final totalAmount = orderAmount ?? 0;
-    final at = now ?? DateTime.now();
-
-    var appliedPrice = basePrice;
-    var appliedDiscount = 0.0;
-
-    for (final rule in _packageDetails1) {
-      if (!_isRuleApplicable(
-        rule: rule,
-        packageId: packageId,
-        itemId: itemId,
-        quantity: quantity,
-        orderAmount: totalAmount,
-        now: at,
-      )) {
-        continue;
+    var working = provider.items.map((e) => e.copyWith()).toList();
+    for (var i = 0; i < 2; i++) {
+      final next = <InvoiceItem>[];
+      for (final cart in working) {
+        final itemMap = itemById[cart.id];
+        if (itemMap == null) {
+          next.add(cart);
+          continue;
+        }
+        final pricing = OrderPackagePricingService.resolveItemPricing(
+          package: _selectedPackage,
+          item: itemMap,
+          quantity: cart.quantity,
+          packageDetails1: _packageDetails1,
+          packageDetails2: _packageDetails2,
+          cartItems: working,
+        );
+        final updated = pricing.allowed
+            ? cart.copyWith(
+                price: pricing.finalPrice,
+                discountPercent: pricing.discountPercent,
+              )
+            : cart;
+        next.add(updated);
       }
-
-      // Android parity: only explicit rule price should override base price.
-      final overridePrice = _toDouble(rule.price);
-      if (overridePrice != null && overridePrice > 0) {
-        appliedPrice = overridePrice;
-      }
-
-      final percentage = _toDouble(rule.percentage);
-      if (percentage != null && percentage > 0) {
-        appliedDiscount = percentage;
-      }
-
-      break;
+      working = next;
     }
 
-    return {'price': appliedPrice, 'discount': appliedDiscount};
-  }
-
-  double _getFinalItemPrice(
-    Map<String, dynamic> item,
-    Map<String, dynamic>? selectedPackage,
-  ) {
-    final basePrice = _getBaseItemPriceForSelectedPackage(
-      item,
-      selectedPackage,
-    );
-    final applied = _applyPackageRulePriceIfAny(
-      item: item,
-      selectedPackage: selectedPackage,
-      basePrice: basePrice,
-    );
-    return applied['price'] ?? basePrice;
-  }
-
-  static double _itemPrice(Map<String, dynamic> m) {
-    final v =
-        m['price'] ??
-        m['Price'] ??
-        m['rate'] ??
-        m['Rate'] ??
-        m['sale_price'] ??
-        m['allprices'];
-    if (v == null) return 0;
-    if (v is num) return v.toDouble();
-    return double.tryParse(v.toString()) ?? 0;
-  }
-
-  void _cachePricingForItem(
-    Map<String, dynamic> item,
-    Map<String, dynamic>? selectedPackage,
-  ) {
-    final bookId = _normalizedItemId(item);
-    if (bookId.isEmpty) return;
-
-    if (_itemPackagePrices.containsKey(bookId) &&
-        _itemDiscounts.containsKey(bookId)) {
-      return;
-    }
-
-    final basePrice = _getBaseItemPriceForSelectedPackage(
-      item,
-      selectedPackage,
-    );
-    final applied = _applyPackageRulePriceIfAny(
-      item: item,
-      selectedPackage: selectedPackage,
-      basePrice: basePrice,
-    );
-
-    _itemPackagePrices[bookId] = applied['price'] ?? basePrice;
-    _itemDiscounts[bookId] = applied['discount'] ?? 0;
+    provider.replaceItems(working);
+    debugPrint('[OrderAdd] groupwise recalculation applied reason=$reason');
   }
 
   // Keep package change fast: reset cache and compute only currently selected item.
   Future<void> _calculateItemPricesForPackage(String packageId) async {
     _itemPackagePrices.clear();
     _itemDiscounts.clear();
+    _itemPricingResults.clear();
 
     final selectedPackage = _packages.firstWhere(
       (p) =>
@@ -2069,7 +1875,13 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     if (_selectedItemIndex != null &&
         _selectedItemIndex! >= 0 &&
         _selectedItemIndex! < _items.length) {
-      _cachePricingForItem(_items[_selectedItemIndex!], selectedPackage);
+      final item = _items[_selectedItemIndex!];
+      final result = _resolveItemPricing(item: item, quantity: 1);
+      final itemId = OrderPackagePricingService.itemIdFromMap(item);
+      if (itemId.isNotEmpty && result.allowed) {
+        _itemPackagePrices[itemId] = result.finalPrice;
+        _itemDiscounts[itemId] = result.discountPercent;
+      }
     }
 
     if (mounted) {
@@ -2079,17 +1891,26 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
   // Get package-calculated price for item
   double _getItemPackagePrice(Map<String, dynamic> item) {
-    final bookId = _normalizedItemId(item);
-    _cachePricingForItem(item, _selectedPackage);
-    return _itemPackagePrices[bookId] ??
-        _getFinalItemPrice(item, _selectedPackage);
+    final itemId = OrderPackagePricingService.itemIdFromMap(item);
+    final result = _resolveItemPricing(item: item, quantity: 1);
+    if (itemId.isNotEmpty && result.allowed) {
+      _itemPackagePrices[itemId] = result.finalPrice;
+      _itemDiscounts[itemId] = result.discountPercent;
+      return result.finalPrice;
+    }
+    return 0;
   }
 
   // Get package discount for item
   double _getItemDiscount(Map<String, dynamic> item) {
-    final bookId = _normalizedItemId(item);
-    _cachePricingForItem(item, _selectedPackage);
-    return _itemDiscounts[bookId] ?? 0;
+    final itemId = OrderPackagePricingService.itemIdFromMap(item);
+    final result = _resolveItemPricing(item: item, quantity: 1);
+    if (itemId.isNotEmpty && result.allowed) {
+      _itemPackagePrices[itemId] = result.finalPrice;
+      _itemDiscounts[itemId] = result.discountPercent;
+      return result.discountPercent;
+    }
+    return 0;
   }
 
   // Item display with price & discount (Android UI format)
@@ -2180,6 +2001,35 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       return;
     }
 
+    final selectedParty = _parties[_selectedPartyIndex!];
+    final selectedPackage = _packages[_selectedPackageIndex!];
+
+    if (OrderPackagePricingService.isPaymentDealRequired(selectedPackage) &&
+        !_isPaymentDealStateResolved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please resolve payment deal before finalizing order'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Android parity: validate minimum order amount
+    if (!PackageEligibilityChecker.meetsMinimumAmount(
+      package: selectedPackage,
+      orderTotal: provider.netAmount,
+    )) {
+      final minAmount = selectedPackage['minorderamount']?.toString() ?? '0';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Add More Amount (Min: $minAmount)'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     await _saveDraft(syncItems: true);
 
     if (_currentDraftId == null) {
@@ -2208,23 +2058,52 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       return;
     }
 
-    final selectedParty = _parties[_selectedPartyIndex!];
-    final selectedPackage = _packages[_selectedPackageIndex!];
+    final draftId = finalizedLocalDraft.order.id;
 
-    // Android parity: validate minimum order amount
-    if (!PackageEligibilityChecker.meetsMinimumAmount(
-      package: selectedPackage,
-      orderTotal: provider.netAmount,
-    )) {
-      final minAmount = selectedPackage['minorderamount']?.toString() ?? '0';
+    // 1) Local save FIRST (Android parity: save to bookings before upload)
+    int? bookingId;
+    try {
+      bookingId = await DraftOrderService.instance
+          .saveFinalizedOrderToBookings(draftId);
+      debugPrint(
+        '[OrderAdd] saveFinalizedOrderToBookings(draftId=$draftId) -> bookingId=$bookingId',
+      );
+      if (bookingId == null) {
+        debugPrint(
+          '[OrderAdd] WARNING: saveFinalizedOrderToBookings returned null (draft may not be finalized in DB)',
+        );
+      }
+    } catch (e) {
+      debugPrint('[OrderAdd] saveFinalizedOrderToBookings ERROR: $e');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Order amount (${provider.netAmount.toStringAsFixed(0)}) is below minimum ($minAmount)',
-          ),
+          content: Text('Local save failed: $e'),
           backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
         ),
       );
+      return;
+    }
+
+    if (!_uploadOnFinalize) {
+      debugPrint('[OrderAdd] Upload on finalize disabled; local save only.');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Order saved locally. Upload from My Orders.'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+
+      await DraftOrderService.instance.createNewDraft();
+      if (mounted) {
+        await context.read<DraftOrderProvider>().loadDraft();
+        Navigator.pop(context);
+      }
       return;
     }
 
@@ -2249,32 +2128,59 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     try {
       // Android parity: format order using OrderUploadFormatter
       final now = DateTime.now();
-      final timestamp = now.millisecondsSinceEpoch.toString();
+      final invDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(now);
       final orderId = _currentOrderIdForUpload;
 
-      const dummyLocation = '24.8607,67.0011';
+        // Keep token values in the same spirit as old Android createJson.
+        // Prefer IDs when present, otherwise use saved display names.
+        final partyToken =
+          (finalizedLocalDraft.order.billToPartyId ?? '').trim().isNotEmpty
+          ? (finalizedLocalDraft.order.billToPartyId ?? '').trim()
+          : (finalizedLocalDraft.order.partyName ?? '').trim();
+        final packageToken =
+          (finalizedLocalDraft.order.packageId ?? '').trim().isNotEmpty
+          ? (finalizedLocalDraft.order.packageId ?? '').trim()
+          : (finalizedLocalDraft.order.packageName ?? '').trim();
+        final deliveryPartyToken =
+          (finalizedLocalDraft.order.shipToPartyId ?? '').trim().isNotEmpty
+          ? (finalizedLocalDraft.order.shipToPartyId ?? '').trim()
+          : (finalizedLocalDraft.order.deliveryPartyName ?? '').trim();
+
+      const dummyLocation = '0,0';
 
       final orderHeader = OrderUploadFormatter.formatOrderHeader(
         orderId: orderId,
-        partyName: partyDisplay(selectedParty),
-        packageName: packageDisplay(selectedPackage),
-        deliveryPoint: _deliveryAddressController.text,
+        partyName: partyToken,
+        packageName: packageToken,
+        deliveryPoint:
+            _selectedDeliveryPointIndex != null &&
+                _selectedDeliveryPointIndex! < _deliveryPoints.length
+            ? _deliveryPointNameFromMap(
+                _deliveryPoints[_selectedDeliveryPointIndex!],
+              )
+            : (finalizedLocalDraft.order.deliveryPointName ?? ''),
         orderBy: _userId,
-        timestamp: timestamp,
-        remarks: _specialRemarksController.text,
+        timestamp: invDate,
+        // Use persisted draft remarks to mirror Android createJson(cartOrder).
+        remarks: (finalizedLocalDraft.order.orderRemarks ?? '').trim(),
         grossTotal: provider.grossAmount.toStringAsFixed(2),
         discount: provider.totalDiscount.toStringAsFixed(2),
         netTotal: provider.netAmount.toStringAsFixed(2),
-        deliveryParty: (_selectedShipToPartyName ?? '').trim(),
+        deliveryParty: deliveryPartyToken,
         advancePaymentDeal: _currentPaymentDealForOrder,
+        // Only use manual address if party is "unavailable"
         deliveryPartyRemarks: _showManualDeliveryAddressField
             ? _deliveryAddressController.text.trim()
             : '',
         deliveryPointRemarks: '',
-        visitId: _selectedApprovedVisit?.visitId ?? '',
+        visitId: _selectedApprovedVisit?.visitId ??
+            finalizedLocalDraft.order.visitId ??
+            '',
         cityId: (_selectedApprovedVisit?.cityIds ?? '').trim(),
         location: dummyLocation,
-        routeId: _selectedApprovedVisit?.routeId ?? '',
+        routeId: _selectedApprovedVisit?.routeId ??
+            finalizedLocalDraft.order.routeId ??
+            '',
         goodsAgencyId:
             _selectedAgencyIndex != null &&
                 _selectedAgencyIndex! < _agencies.length
@@ -2288,26 +2194,89 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       );
 
       // Convert InvoiceItem list to Map list for formatter
-      final itemMaps = provider.items
-          .map(
-            (item) => {
-              'name': item.name,
-              'price': item.price.toString(),
-              'quantity': item.quantity.toString(),
-              'discount_percent': item.discountPercent.toString(),
-              'total': item.subtotal.toString(),
-              'remarks': '',
-              'direction_store': '',
-              'special_remarks': '',
-              'special_price': '0',
-            },
-          )
-          .toList();
+      // CRITICAL: Get saved items from DB to include special_remarks and special_price
+      // These were stored during draft save but are not in the InvoiceItem model
+      List<Map<String, dynamic>> itemMaps = [];
+      final savedDraft = await DraftOrderService.instance.getDraftById(
+        finalizedLocalDraft.order.id,
+      );
+      if (savedDraft != null) {
+        itemMaps = savedDraft.items
+            .map(
+              (dbItem) => {
+                'name': dbItem.itemName,
+                'price': dbItem.unitPrice.toString(),
+                'quantity': dbItem.quantity.toString(),
+                'discount_percent': dbItem.discountPercent.toString(),
+                'total':
+                    (dbItem.unitPrice * dbItem.quantity -
+                            (dbItem.unitPrice *
+                                dbItem.quantity *
+                                (dbItem.discountPercent / 100)))
+                        .toString(),
+                'remarks': '',
+                'direction_store': '',
+                'special_remarks': dbItem.specialRemarks ?? '',
+                'special_price': '0',
+              },
+            )
+            .toList();
+      } else {
+        // Fallback: use InvoiceItem if DB query fails (should not happen)
+        itemMaps = provider.items
+            .map(
+              (item) => {
+                'name': item.name,
+                'price': item.price.toString(),
+                'quantity': item.quantity.toString(),
+                'discount_percent': item.discountPercent.toString(),
+                'total': item.total.toString(),
+                'remarks': '',
+                'direction_store': '',
+                'special_remarks': '',
+                'special_price': '0',
+              },
+            )
+            .toList();
+      }
 
       final orderItems = OrderUploadFormatter.formatOrderItems(
         items: itemMaps,
         orderId: orderId,
       );
+
+      // Debug: token-wise header dump for SQL parity checks.
+      final headerTokens = orderHeader.split('_');
+      if (kDebugMode) {
+        debugPrint('[OrderAdd] header token count=${headerTokens.length}');
+        final labels = <String>[
+          'localinvno/orderid',
+          'partyid',
+          'package_id',
+          'deliverypoint',
+          'orderby/employeeid',
+          'invdate',
+          'remarks',
+          'gross',
+          'discount',
+          'net',
+          'delivery_party',
+          'deal_id',
+          'delivery_party_remarks',
+          'delivery_point_remarks',
+          'visit_id',
+          'city_id',
+          'location',
+          'route_id',
+          'goodsagency_id',
+          'goodsagency_name',
+        ];
+
+        for (var i = 0; i < labels.length; i++) {
+          final value = i < headerTokens.length ? headerTokens[i] : '<missing>';
+          debugPrint('[OrderAdd][HDR][$i] ${labels[i]} = $value');
+        }
+      }
 
       // Android parity: send order using postOrderZ endpoint
       final response = await ApiService.postOrder(
@@ -2315,8 +2284,12 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         orderItems: orderItems,
       );
 
+      debugPrint('[OrderAdd] Upload response: $response');
+
       // Convert Map response to OrderUploadResult
       final status = response['status']?.toString().toLowerCase() ?? '';
+      debugPrint('[OrderAdd] Response status: "$status"');
+
       final uploadResult = OrderUploadResult(
         success: status == 'success',
         message:
@@ -2328,22 +2301,58 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         error: status != 'success' ? response['error']?.toString() : null,
       );
 
+      debugPrint('[OrderAdd] uploadResult.success=${uploadResult.success}');
+
       if (!mounted) return;
       Navigator.pop(context); // Close loading dialog
+      debugPrint('[OrderAdd] Closed loading dialog');
 
       if (uploadResult.success) {
-        // Attendance intentionally skipped for now (as requested).
-
-        provider.finalize();
-        await DraftOrderService.instance.createNewDraft();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${uploadResult.message} (saved locally + uploaded)'),
-            backgroundColor: Colors.green,
-          ),
+        debugPrint(
+          '[OrderAdd] Upload successful! Starting post-upload flow...',
         );
-        Navigator.pop(context);
+
+        // Already saved to bookings before upload; now mark as uploaded
+        if (bookingId != null) {
+          await DraftOrderService.instance.markBookingUploaded(bookingId);
+          debugPrint('[OrderAdd] markBookingUploaded($bookingId) completed');
+        }
+
+        debugPrint('[OrderAdd] Calling markUploadSuccess for draft $draftId');
+        await DraftOrderService.instance.markUploadSuccess(
+          draftId,
+          clearItems: true,
+        );
+        debugPrint('[OrderAdd] markUploadSuccess completed');
+
+        // New blank draft and refresh provider
+        debugPrint('[OrderAdd] Creating new draft');
+        await DraftOrderService.instance.createNewDraft();
+        if (mounted) await context.read<DraftOrderProvider>().loadDraft();
+        debugPrint('[OrderAdd] New draft created');
+
+        const snackContent =
+            'Order uploaded successfully! ✅ (saved locally + uploaded)';
+        debugPrint('[OrderAdd] Showing success snackbar: $snackContent');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(snackContent),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+
+        debugPrint(
+          '[OrderAdd] Calling Navigator.pop(context) to close Order Add screen',
+        );
+        if (mounted) Navigator.pop(context);
+        debugPrint('[OrderAdd] Upload flow completed successfully!');
       } else {
+        debugPrint(
+          '[OrderAdd] Upload FAILED with message: ${uploadResult.message}',
+        );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -2355,11 +2364,12 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         );
       }
     } catch (e) {
+      debugPrint('[OrderAdd] EXCEPTION in finalize/upload flow: $e');
       if (!mounted) return;
       Navigator.pop(context); // Close loading dialog
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Upload failed: $e'),
+          content: Text('Error during finalization: $e'),
           backgroundColor: Colors.red,
           duration: const Duration(seconds: 4),
         ),
@@ -2373,7 +2383,17 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     _specialRemarksController.dispose();
     _specialPriceController.dispose();
     _deliveryAddressController.dispose();
+    for (final c in _itemQtyControllers.values) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  TextEditingController _qtyCtrlFor(String itemId, int currentQty) {
+    return _itemQtyControllers.putIfAbsent(
+      itemId,
+      () => TextEditingController(text: currentQty.toString()),
+    );
   }
 
   Future<void> _addItem() async {
@@ -2390,15 +2410,45 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       return;
     }
 
+    if (!_ensurePaymentDealResolvedForItemEntry()) {
+      return;
+    }
+
+    final qty = int.tryParse(_qtyController.text.trim());
+    if (qty == null || qty <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter valid quantity')),
+      );
+      return;
+    }
+
     final itemMap = _items[_selectedItemIndex!];
     final name = itemDisplay(itemMap);
+    final pricing = _resolveItemPricing(item: itemMap, quantity: qty);
 
-    // Android parity: use package price calculation
-    final packagePrice = _getItemPackagePrice(itemMap);
-    final discount = _getItemDiscount(itemMap);
+    if (!pricing.allowed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(pricing.reason ?? 'Item Not Allowed'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      _selectedItemPrice = '';
+      return;
+    }
 
-    // Price stays package-driven; item-level manual editing is disabled.
-    final price = packagePrice;
+    var price = pricing.finalPrice;
+    final discount = pricing.discountPercent;
+
+    final specialPrice = OrderPackagePricingService.toDoubleSafe(
+      _specialPriceController.text.trim(),
+    );
+    if (specialPrice != null && specialPrice > 0) {
+      price = specialPrice;
+      debugPrint(
+        '[OrderAdd] special price override applied item=$name price=$price',
+      );
+    }
 
     final itemId =
         itemMap['bookid']?.toString() ??
@@ -2418,8 +2468,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
     // Android parity: validate price before adding
     if (price <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$name has no valid price. Cannot add to cart.'),
+        const SnackBar(
+          content: Text('Item Not Allowed'),
           backgroundColor: Colors.red,
         ),
       );
@@ -2439,6 +2489,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
           backgroundColor: Colors.orange,
         ),
       );
+      debugPrint('[OrderAdd] duplicate blocked item=$itemId');
       return;
     }
 
@@ -2462,8 +2513,8 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       id: itemId,
       name: name,
       price: price,
-      quantity: int.tryParse(_qtyController.text) ?? 1,
-      discountPercent: discount, // Android parity: apply package discount
+      quantity: qty,
+      discountPercent: discount,
     );
     await _addItemToOrder(item: item, showSuccessSnack: discount > 0);
 
@@ -2480,6 +2531,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   }) async {
     final provider = context.read<InvoiceProvider>();
     provider.addItem(item);
+    await _recalculateGroupwiseCartItems(reason: 'add');
     _recalculateTotals();
     await _saveDraft();
 
@@ -2499,6 +2551,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   Future<void> _removeItemFromOrder(InvoiceItem item) async {
     final provider = context.read<InvoiceProvider>();
     provider.removeItem(item.id);
+    await _recalculateGroupwiseCartItems(reason: 'delete');
     _recalculateTotals();
     await _saveDraft();
   }
@@ -2531,65 +2584,6 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 );
               },
               child: const Text('Delete', style: TextStyle(color: Colors.red)),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _showEditQuantityDialog(
-    BuildContext context,
-    InvoiceProvider provider,
-    InvoiceItem item,
-  ) async {
-    final qtyController = TextEditingController(text: item.quantity.toString());
-
-    return showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Edit Quantity - ${item.name}'),
-          content: TextField(
-            controller: qtyController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: 'Quantity',
-              border: OutlineInputBorder(),
-            ),
-            autofocus: true,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () async {
-                final newQty = int.tryParse(qtyController.text);
-                if (newQty == null || newQty <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Please enter a valid quantity'),
-                      backgroundColor: Colors.orange,
-                    ),
-                  );
-                  return;
-                }
-
-                provider.updateItemQuantity(item.id, newQty);
-                _recalculateTotals();
-                await _saveDraft(syncItems: true);
-                Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('${item.name} quantity updated to $newQty'),
-                    backgroundColor: Colors.green,
-                    duration: const Duration(seconds: 2),
-                  ),
-                );
-              },
-              child: const Text('Update'),
             ),
           ],
         );
@@ -2681,9 +2675,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                         ],
                       ),
                     ),
+                  _buildOrderDetailsSection(primary),
                   _buildTopSection(primary),
                   _buildItemEntrySection(primary),
-                  _buildOrderDetailsSection(primary),
                   _buildItemsListSection(primary),
                   _buildSummarySection(primary),
                   _buildBottomActionsSection(primary),
@@ -2735,9 +2729,26 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
           ),
         ],
       ),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Row(
+            children: [
+              const Icon(Icons.tune, color: Colors.white70, size: 13),
+              const SizedBox(width: 5),
+              Text(
+                'ORDER CONFIGURATION',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.7),
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
           _buildFieldRow(
             'Visit:',
             DropdownButton<int>(
@@ -3059,7 +3070,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 ),
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text(
                   _currentPaymentDealForOrder.isEmpty
@@ -3109,9 +3120,10 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
   Widget _buildFieldRow(String label, Widget field) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         SizedBox(
-          width: 90,
+          width: 100,
           child: Text(
             label,
             style: const TextStyle(
@@ -3127,6 +3139,10 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
   }
 
   Widget _buildItemEntrySection(Color primary) {
+    final itemEntryBlocked =
+        _isPaymentDealRequiredForSelectedPackage &&
+        !_isPaymentDealStateResolved;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
@@ -3143,12 +3159,32 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       padding: const EdgeInsets.all(12),
       child: Column(
         children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: [
+                Icon(Icons.add_shopping_cart, size: 14, color: primary),
+                const SizedBox(width: 6),
+                Text(
+                  'ADD ITEM',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: primary,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ],
+            ),
+          ),
           Row(
             children: [
               Expanded(
                 flex: 3,
                 child: InkWell(
-                  onTap: _items.isEmpty ? null : _pickItem,
+                  onTap: (_items.isEmpty || itemEntryBlocked)
+                      ? null
+                      : _pickItem,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
@@ -3170,9 +3206,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                                 _selectedItemIndex != null &&
                                         _selectedItemIndex! < _items.length
                                     ? itemDisplay(_items[_selectedItemIndex!])
-                                    : (_items.isEmpty
-                                          ? 'No items available'
-                                          : 'Search Item'),
+                                    : (itemEntryBlocked
+                                          ? 'Select payment deal first'
+                                          : (_items.isEmpty
+                                                ? 'No items available'
+                                                : 'Search Item')),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -3221,9 +3259,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               ),
               const SizedBox(width: 8),
               ElevatedButton(
-                onPressed: () async {
-                  await _addItem();
-                },
+                onPressed: itemEntryBlocked
+                    ? null
+                    : () async {
+                        await _addItem();
+                      },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: primary,
                   foregroundColor: Colors.white,
@@ -3242,6 +3282,16 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
               ),
             ],
           ),
+          if (itemEntryBlocked) ...[
+            const SizedBox(height: 8),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Payment deal is required before adding items',
+                style: TextStyle(color: Colors.orange, fontSize: 12),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -3266,38 +3316,58 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         children: [
           Expanded(
             child: Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: primary.withValues(alpha: 0.92),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Text(
-                'Date : $_fixedDateTime',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-                textAlign: TextAlign.center,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.today, color: Colors.white70, size: 14),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      _fixedOrderDate,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
                 color: primary.withValues(alpha: 0.92),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Text(
-                'Order ID: $_currentOrderIdForDisplay',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
-                textAlign: TextAlign.center,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.receipt, color: Colors.white70, size: 14),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      'Order #$_currentOrderIdForDisplay',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -3335,6 +3405,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
 
         return Container(
           margin: const EdgeInsets.only(bottom: 10),
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
             color: Colors.white,
             border: Border.all(color: primary.withValues(alpha: 0.25)),
@@ -3441,27 +3512,51 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                         ),
                       ),
                       Expanded(
-                        child: InkWell(
-                          onTap: () =>
-                              _showEditQuantityDialog(context, provider, item),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 4,
-                              horizontal: 8,
+                        child: SizedBox(
+                          height: 30,
+                          child: TextField(
+                            controller: _qtyCtrlFor(item.id, item.quantity),
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
                             ),
-                            decoration: BoxDecoration(
-                              color: primary.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: primary),
-                            ),
-                            child: Text(
-                              item.quantity.toString(),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
+                            decoration: InputDecoration(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 4,
                               ),
-                              textAlign: TextAlign.center,
+                              isDense: true,
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(4),
+                                borderSide: BorderSide(color: primary),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(4),
+                                borderSide: BorderSide(
+                                  color: primary,
+                                  width: 2,
+                                ),
+                              ),
+                              filled: true,
+                              fillColor: primary.withValues(alpha: 0.12),
                             ),
+                            onSubmitted: (val) async {
+                              final newQty = int.tryParse(val);
+                              if (newQty != null && newQty > 0) {
+                                provider.updateItemQuantity(item.id, newQty);
+                                await _recalculateGroupwiseCartItems(
+                                  reason: 'qty_edit',
+                                );
+                                _recalculateTotals();
+                                await _saveDraft(syncItems: true);
+                              } else {
+                                _itemQtyControllers[item.id]?.text = item
+                                    .quantity
+                                    .toString();
+                              }
+                            },
                           ),
                         ),
                       ),
@@ -3518,6 +3613,17 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       builder: (context, provider, child) {
         return Container(
           margin: const EdgeInsets.only(bottom: 10),
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            borderRadius: const BorderRadius.all(Radius.circular(12)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.06),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
           child: Column(
             children: [
               Container(
@@ -3525,13 +3631,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                   vertical: 12,
                   horizontal: 16,
                 ),
-                decoration: BoxDecoration(
-                  color: primary,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(12),
-                    topRight: Radius.circular(12),
-                  ),
-                ),
+                decoration: BoxDecoration(color: primary),
                 child: const Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -3570,10 +3670,6 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                 decoration: BoxDecoration(
                   color: Colors.white,
                   border: Border.all(color: primary.withValues(alpha: 0.3)),
-                  borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(12),
-                    bottomRight: Radius.circular(12),
-                  ),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3581,7 +3677,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     Text(
                       provider.grossAmount.toStringAsFixed(1),
                       style: const TextStyle(
-                        fontSize: 20,
+                        fontSize: 18,
                         fontWeight: FontWeight.bold,
                         color: Colors.black87,
                       ),
@@ -3589,17 +3685,17 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     Text(
                       '-${provider.totalDiscount.toStringAsFixed(1)}',
                       style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
                         color: Colors.red,
                       ),
                     ),
                     Text(
-                      provider.netAmount.toStringAsFixed(1),
+                      'Rs\u00A0${provider.netAmount.toStringAsFixed(0)}',
                       style: const TextStyle(
-                        fontSize: 20,
+                        fontSize: 22,
                         fontWeight: FontWeight.bold,
-                        color: Colors.green,
+                        color: Color(0xFF16A34A),
                       ),
                     ),
                   ],
@@ -3628,125 +3724,151 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         ],
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    border: Border.all(color: const Color(0xFFD1D9E6)),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: Text(
-                    _userId,
-                    style: const TextStyle(fontSize: 14),
-                    textAlign: TextAlign.center,
-                  ),
+              const Icon(
+                Icons.person_outline,
+                size: 16,
+                color: Color(0xFF6B7280),
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'Agent:',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF6B7280),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: _showOrderRemarksDialog,
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.all(12),
-                    side: const BorderSide(color: Color(0xFFD1D9E6)),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                  ),
-                  child: const Text(
-                    'Want to add Remarks?',
-                    style: TextStyle(fontSize: 13, color: Colors.black87),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 5,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  _userId,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
             ],
           ),
-          if (_specialRemarksController.text.trim().isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEEF4FF),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFCBDCFB)),
+          const SizedBox(height: 10),
+          const Text(
+            'Order Remarks',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6B7280),
+            ),
+          ),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _specialRemarksController,
+            minLines: 1,
+            maxLines: 3,
+            decoration: InputDecoration(
+              hintText: 'Order Remarks (optional)',
+              prefixIcon: const Icon(Icons.notes_outlined, size: 18),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
               ),
-              child: Text(
-                'Remarks: ${_specialRemarksController.text.trim()}',
-                style: const TextStyle(
-                  color: Color(0xFF1E3A8A),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Color(0xFFD1D9E6)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(
+                  color: Color(0xFF2563EB),
+                  width: 2,
                 ),
               ),
             ),
-          ],
+            onChanged: (_) => setState(() {}),
+            onEditingComplete: () => _saveDraft(syncItems: false),
+          ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              const Text(
-                'Delivery:',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    border: Border.all(color: const Color(0xFFD1D9E6)),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: InkWell(
-                    onTap: _pickDeliveryPoint,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              _selectedDeliveryPointIndex != null &&
-                                      _selectedDeliveryPointIndex! <
-                                          _deliveryPoints.length
+          const Text(
+            'Via / Delivery Point',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF6B7280),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              border: Border.all(color: const Color(0xFFD1D9E6)),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: InkWell(
+              onTap: _pickDeliveryPoint,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.local_shipping,
+                      size: 16,
+                      color: Color(0xFF6B7280),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _selectedDeliveryPointIndex != null &&
+                                _selectedDeliveryPointIndex! <
+                                    _deliveryPoints.length
+                            ? _deliveryPointNameFromMap(
+                                    _deliveryPoints[_selectedDeliveryPointIndex!],
+                                  ).isNotEmpty
                                   ? _deliveryPointNameFromMap(
-                                          _deliveryPoints[_selectedDeliveryPointIndex!],
-                                        ).isNotEmpty
-                                        ? _deliveryPointNameFromMap(
-                                            _deliveryPoints[_selectedDeliveryPointIndex!],
-                                          )
-                                        : deliveryPointDisplay(
-                                            _deliveryPoints[_selectedDeliveryPointIndex!],
-                                          )
-                                  : 'Select Via Delivery Point',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          const Icon(Icons.search, size: 18),
-                        ],
+                                      _deliveryPoints[_selectedDeliveryPointIndex!],
+                                    )
+                                  : deliveryPointDisplay(
+                                      _deliveryPoints[_selectedDeliveryPointIndex!],
+                                    )
+                            : 'Select Via Delivery Point',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                  ),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.search, size: 18),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
           const SizedBox(height: 16),
           Row(
             children: [
               Expanded(
-                child: ElevatedButton(
+                child: OutlinedButton(
                   onPressed: () async {
                     await _resetWholeOrderScreen();
                   },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: primary,
-                    foregroundColor: Colors.white,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    side: const BorderSide(color: Colors.red, width: 1.5),
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
@@ -3765,16 +3887,26 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                     await _finalizeAndUploadOrder();
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: primary,
+                    backgroundColor: const Color(0xFF16A34A),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text(
-                    'FINALIZE',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.save_outlined, size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        'SAVE OFFLINE',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),

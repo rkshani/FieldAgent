@@ -53,7 +53,7 @@ class _CreatedOrderTestingScreenState extends State<CreatedOrderTestingScreen>
       _onlineError = null;
     });
 
-    final result = await ApiService.fetchOnlineCreatedOrdersForTesting();
+    final result = await ApiService.fetchMyOrders();
     if (!mounted) return;
 
     setState(() {
@@ -131,8 +131,14 @@ class _CreatedOrderTestingScreenState extends State<CreatedOrderTestingScreen>
         m['date']?.toString() ??
         m['timestamp']?.toString() ??
         '';
-    if (date.isEmpty) return 'ID: $id';
-    return 'ID: $id | $date';
+    final amount =
+        m['net_total']?.toString() ??
+        m['total']?.toString() ??
+        m['amount']?.toString() ??
+        '';
+    final amountText = amount.isNotEmpty ? ' | Rs $amount' : '';
+    if (date.isEmpty) return 'ID: $id$amountText';
+    return 'ID: $id | $date$amountText';
   }
 
   @override

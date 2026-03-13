@@ -24,10 +24,11 @@ class LocalDbService {
 
     return openDatabase(
       path,
-      version: 4,
+      version: 7,
       onCreate: (db, version) async {
         await _createLocalApiCache(db);
         await _createDraftTables(db);
+        await _createBookingsTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -39,8 +40,60 @@ class LocalDbService {
         if (oldVersion < 4) {
           await _addOrderRemarksColumnIfNeeded(db);
         }
+        if (oldVersion < 5) {
+          await _addOrderUploadColumnsIfNeeded(db);
+        }
+        if (oldVersion < 6) {
+          await _createBookingsTables(db);
+        }
+        if (oldVersion < 7) {
+          // Safety migration: ensure bookings tables exist for users who already
+          // had DB version 6 from earlier builds without these tables.
+          await _createBookingsTables(db);
+        }
       },
     );
+  }
+
+  /// Android parity: bookings table (INSERT INTO bookings ...)
+  static Future<void> _createBookingsTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        draft_order_id INTEGER,
+        orderby INTEGER NOT NULL,
+        invdate TEXT NOT NULL,
+        partyid TEXT NOT NULL,
+        package_id TEXT NOT NULL,
+        remarks TEXT,
+        status INTEGER NOT NULL DEFAULT 1,
+        employeeid TEXT NOT NULL,
+        localinvno TEXT NOT NULL,
+        deliverypoint TEXT,
+        isandroid TEXT NOT NULL DEFAULT '1',
+        delivery_party TEXT,
+        deal_id TEXT,
+        goodsagency_id TEXT,
+        uploaded TEXT NOT NULL DEFAULT 'NO',
+        uploaded_at TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (draft_order_id) REFERENCES draft_orders(id)
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS booking_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL,
+        item_id TEXT,
+        item_name TEXT,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        unit_price REAL NOT NULL DEFAULT 0,
+        discount_percent REAL NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+      )
+    ''');
   }
 
   static Future<void> _createLocalApiCache(Database db) async {
@@ -75,6 +128,9 @@ class LocalDbService {
         delivery_address TEXT,
         order_remarks TEXT,
         status TEXT NOT NULL DEFAULT 'draft',
+        finalize_flag TEXT NOT NULL DEFAULT '0',
+        uploaded TEXT NOT NULL DEFAULT 'NO',
+        uploaded_at TEXT,
         finalized_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -83,6 +139,7 @@ class LocalDbService {
     ''');
     await _addOrderSerialNoColumnIfNeeded(db);
     await _addOrderRemarksColumnIfNeeded(db);
+    await _addOrderUploadColumnsIfNeeded(db);
     await db.execute('''
       CREATE TABLE IF NOT EXISTS draft_order_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,6 +172,30 @@ class LocalDbService {
       await db.execute(
         'ALTER TABLE draft_orders ADD COLUMN order_remarks TEXT',
       );
+    } catch (_) {
+      // Column already exists or table doesn't exist yet; safe to ignore.
+    }
+  }
+
+  static Future<void> _addOrderUploadColumnsIfNeeded(Database db) async {
+    try {
+      await db.execute(
+        "ALTER TABLE draft_orders ADD COLUMN finalize_flag TEXT NOT NULL DEFAULT '0'",
+      );
+    } catch (_) {
+      // Column already exists or table doesn't exist yet; safe to ignore.
+    }
+
+    try {
+      await db.execute(
+        "ALTER TABLE draft_orders ADD COLUMN uploaded TEXT NOT NULL DEFAULT 'NO'",
+      );
+    } catch (_) {
+      // Column already exists or table doesn't exist yet; safe to ignore.
+    }
+
+    try {
+      await db.execute('ALTER TABLE draft_orders ADD COLUMN uploaded_at TEXT');
     } catch (_) {
       // Column already exists or table doesn't exist yet; safe to ignore.
     }

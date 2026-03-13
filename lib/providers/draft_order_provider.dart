@@ -1,6 +1,5 @@
 import 'package:flutter/foundation.dart';
 
-import '../models/draft_order.dart';
 import '../models/draft_order_item.dart';
 import '../services/draft_order_service.dart';
 import '../services/sync_service.dart';
@@ -56,7 +55,10 @@ class DraftOrderProvider extends ChangeNotifier {
   }
 
   Future<void> updateShipTo(String? partyId, String? name) async {
-    await updateHeader({'ship_to_party_id': partyId, 'delivery_party_name': name});
+    await updateHeader({
+      'ship_to_party_id': partyId,
+      'delivery_party_name': name,
+    });
   }
 
   Future<void> updateGoodsAgency(String? id, String? name) async {
@@ -120,17 +122,32 @@ class DraftOrderProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Finalizes current draft, triggers sync, creates new blank draft.
+  /// Finalizes current draft: local save to bookings (Android parity) -> upload -> mark uploaded -> new draft.
   Future<bool> finalize() async {
     final id = _draft?.order.id;
     if (id == null || (_draft?.items.isEmpty ?? true)) return false;
+
+    // 1) Mark draft finalized in DB
     final finalized = await DraftOrderService.instance.finalizeDraft(id);
-    if (finalized != null) {
-      await SyncService.instance.uploadIfInterNetAvailable(
-        order: finalized.order,
-        items: finalized.items,
-      );
+    if (finalized == null) return false;
+
+    // 2) Local save: INSERT into bookings + booking_items (Android parity)
+    final bookingId = await DraftOrderService.instance.saveFinalizedOrderToBookings(id);
+    if (bookingId == null) {
+      await loadDraft();
+      return true;
     }
+
+    // 3) Upload when internet available (Android param names)
+    final uploadOk = await SyncService.instance.uploadBooking(bookingId);
+
+    // 4) Mark booking and draft as uploaded on success
+    if (uploadOk) {
+      await DraftOrderService.instance.markBookingUploaded(bookingId);
+      await DraftOrderService.instance.markUploadSuccess(id);
+    }
+
+    // 5) New blank draft
     await DraftOrderService.instance.createNewDraft();
     await loadDraft();
     return true;

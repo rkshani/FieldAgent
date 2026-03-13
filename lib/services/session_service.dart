@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user.dart';
+import 'api_config.dart';
 
 class SessionService {
   // Keys
@@ -20,6 +21,10 @@ class SessionService {
 
   static const String _isActivityRunningKey = 'is_activity_running';
   static const String _isAppUpdateImportantKey = 'is_app_update_important';
+  static const String _locationPermissionRequestedKey =
+      'location_permission_requested';
+  static const String _cameraPermissionRequestedKey =
+      'camera_permission_requested';
 
   static const String _legacyUserIdKey = 'user_id';
   static const String _legacyEmployeeIdKey = 'employee_id';
@@ -29,8 +34,8 @@ class SessionService {
       'user_visited_parties_payload_';
   static const String _userVisitMetaPrefix = 'user_visit_meta_';
 
-  static const String domainName = 'https://www.hisaab.org';
-  static const String domainName2 = 'https://www.hisaab.org';
+  static const String domainName = ApiConfig.domain;
+  static const String domainName2 = ApiConfig.domain;
 
   static const String _defaultStaticIp = domainName2;
   static const String _defaultUserRecId = '1';
@@ -330,6 +335,27 @@ class SessionService {
   static Future<int> getInteger(String key, int defaultValue) async {
     final prefs = await _prefs;
     return prefs.getInt(key) ?? defaultValue;
+  }
+
+  // Location permission prompt tracking
+  static Future<void> setLocationPermissionRequested(bool requested) async {
+    final prefs = await _prefs;
+    await prefs.setBool(_locationPermissionRequestedKey, requested);
+  }
+
+  static Future<bool> hasRequestedLocationPermission() async {
+    final prefs = await _prefs;
+    return prefs.getBool(_locationPermissionRequestedKey) ?? false;
+  }
+
+  static Future<void> setCameraPermissionRequested(bool requested) async {
+    final prefs = await _prefs;
+    await prefs.setBool(_cameraPermissionRequestedKey, requested);
+  }
+
+  static Future<bool> hasRequestedCameraPermission() async {
+    final prefs = await _prefs;
+    return prefs.getBool(_cameraPermissionRequestedKey) ?? false;
   }
 
   static Future<SharedPreferences> get _prefs async {

@@ -19,6 +19,9 @@ class DraftOrder {
   final String? deliveryAddress;
   final String? orderRemarks;
   final String status;
+  final String finalizeFlag;
+  final String uploaded;
+  final String? uploadedAt;
   final String? finalizedAt;
   final String createdAt;
   final String updatedAt;
@@ -44,6 +47,9 @@ class DraftOrder {
     this.deliveryAddress,
     this.orderRemarks,
     this.status = 'draft',
+    this.finalizeFlag = '0',
+    this.uploaded = 'NO',
+    this.uploadedAt,
     this.finalizedAt,
     required this.createdAt,
     required this.updatedAt,
@@ -51,6 +57,8 @@ class DraftOrder {
   });
 
   bool get isFinalized => status == 'finalized';
+  bool get isPendingUpload => finalizeFlag == '1' && uploaded != 'YES';
+  bool get isUploaded => finalizeFlag == '2' || uploaded == 'YES';
 
   Map<String, dynamic> toMap() {
     return {
@@ -73,6 +81,9 @@ class DraftOrder {
       'delivery_address': deliveryAddress,
       'order_remarks': orderRemarks,
       'status': status,
+      'finalize_flag': finalizeFlag,
+      'uploaded': uploaded,
+      'uploaded_at': uploadedAt,
       'finalized_at': finalizedAt,
       'created_at': createdAt,
       'updated_at': updatedAt,
@@ -111,6 +122,9 @@ class DraftOrder {
       deliveryAddress: map['delivery_address'] as String?,
       orderRemarks: map['order_remarks'] as String?,
       status: map['status'] as String? ?? 'draft',
+      finalizeFlag: map['finalize_flag'] as String? ?? '0',
+      uploaded: map['uploaded'] as String? ?? 'NO',
+      uploadedAt: map['uploaded_at'] as String?,
       finalizedAt: map['finalized_at'] as String?,
       createdAt: map['created_at'] as String,
       updatedAt: map['updated_at'] as String,

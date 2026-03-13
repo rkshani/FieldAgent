@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'update_db_screen.dart';
 import 'order_add_screen.dart';
@@ -35,6 +36,111 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _fetchDataAutomatically();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureLocationPermissionOnHomeEntry();
+      _ensureCameraPermissionOnHomeEntry();
+    });
+  }
+
+  Future<void> _ensureLocationPermissionOnHomeEntry() async {
+    try {
+      final promptedBefore =
+          await SessionService.hasRequestedLocationPermission();
+      final status = await Permission.locationWhenInUse.status;
+
+      if (status.isGranted) {
+        await SessionService.setLocationPermissionRequested(true);
+        return;
+      }
+
+      // First launch on home should prompt. On later visits, prompt only if missing.
+      if (!promptedBefore ||
+          status.isDenied ||
+          status.isRestricted ||
+          status.isPermanentlyDenied) {
+        final requested = await Permission.locationWhenInUse.request();
+        await SessionService.setLocationPermissionRequested(true);
+
+        if (!mounted) return;
+        if (requested.isGranted) {
+          return;
+        }
+
+        if (requested.isPermanentlyDenied) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                'Location permission permanently denied. Please enable it from settings.',
+              ),
+              action: SnackBarAction(
+                label: 'Settings',
+                onPressed: openAppSettings,
+              ),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+          return;
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Location permission not granted.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Location permission check failed: $e');
+    }
+  }
+
+  Future<void> _ensureCameraPermissionOnHomeEntry() async {
+    try {
+      final promptedBefore =
+          await SessionService.hasRequestedCameraPermission();
+      final status = await Permission.camera.status;
+
+      if (status.isGranted) {
+        await SessionService.setCameraPermissionRequested(true);
+        return;
+      }
+
+      if (!promptedBefore ||
+          status.isDenied ||
+          status.isRestricted ||
+          status.isPermanentlyDenied) {
+        final requested = await Permission.camera.request();
+        await SessionService.setCameraPermissionRequested(true);
+
+        if (!mounted) return;
+        if (requested.isGranted) return;
+
+        if (requested.isPermanentlyDenied) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                'Camera permission permanently denied. Please enable it from settings.',
+              ),
+              action: SnackBarAction(
+                label: 'Settings',
+                onPressed: openAppSettings,
+              ),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+          return;
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Camera permission not granted.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Camera permission check failed: $e');
+    }
   }
 
   /// Automatically fetch local data after login (runs silently in background)

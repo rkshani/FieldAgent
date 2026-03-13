@@ -43,6 +43,10 @@
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app needs your location to support field agent order and visit workflows.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access for field agent workflows.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 </dict>

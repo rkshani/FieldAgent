@@ -179,6 +179,9 @@ class DraftOrderService {
       'local_order_id': localOrderId,
       if (serialNo != null) 'order_serial_no': serialNo,
       'status': 'draft',
+      'finalize_flag': '0',
+      'uploaded': 'NO',
+      'uploaded_at': null,
       'created_at': now,
       'updated_at': now,
       'employee_id': employeeId?.toString(),
@@ -286,6 +289,22 @@ class DraftOrderService {
     );
   }
 
+  /// Delete all line items for a specific draft.
+  Future<void> deleteAllLineItems(int draftOrderId) async {
+    final db = await _db;
+    await db.delete(
+      'draft_order_items',
+      where: 'draft_order_id = ?',
+      whereArgs: [draftOrderId],
+    );
+    await db.update(
+      'draft_orders',
+      {'updated_at': DateTime.now().toIso8601String()},
+      where: 'id = ?',
+      whereArgs: [draftOrderId],
+    );
+  }
+
   /// Resets current draft: clear header and delete all line items (or create new blank draft).
   Future<DraftOrderWithItems?> resetDraft(int draftId) async {
     final db = await _db;
@@ -327,11 +346,173 @@ class DraftOrderService {
     final now = DateTime.now().toIso8601String();
     await db.update(
       'draft_orders',
-      {'status': 'finalized', 'finalized_at': now, 'updated_at': now},
+      {
+        'status': 'finalized',
+        'finalize_flag': '1',
+        'uploaded': 'NO',
+        'uploaded_at': null,
+        'finalized_at': now,
+        'updated_at': now,
+      },
       where: 'id = ?',
       whereArgs: [draftId],
     );
     return getDraftById(draftId);
+  }
+
+  /// Marks a finalized order as uploaded (Android parity: finalize=2, uploaded=YES).
+  Future<void> markUploadSuccess(int draftId, {bool clearItems = true}) async {
+    final db = await _db;
+    final now = DateTime.now().toIso8601String();
+
+    await db.update(
+      'draft_orders',
+      {
+        'finalize_flag': '2',
+        'uploaded': 'YES',
+        'uploaded_at': now,
+        'updated_at': now,
+      },
+      where: 'id = ?',
+      whereArgs: [draftId],
+    );
+
+    if (clearItems) {
+      await db.delete(
+        'draft_order_items',
+        where: 'draft_order_id = ?',
+        whereArgs: [draftId],
+      );
+    }
+  }
+
+  /// Android parity: save finalized draft into bookings + booking_items (local save).
+  /// Call after finalizeDraft. Returns booking id or null.
+  Future<int?> saveFinalizedOrderToBookings(int draftId) async {
+    final draft = await getDraftById(draftId);
+    if (draft == null || !draft.order.isFinalized) return null;
+
+    final db = await _db;
+    final order = draft.order;
+    final employeeId = await SessionService.getEmployeeId();
+    final empId = employeeId?.toString() ?? '1013';
+    final now = DateTime.now();
+    final invdate = order.finalizedAt != null
+        ? order.finalizedAt!
+        : order.updatedAt;
+
+    final localinvno = (order.orderSerialNo ?? order.id).toString();
+    final bookingId = await db.insert('bookings', {
+      'draft_order_id': draftId,
+      'orderby': int.tryParse(empId) ?? 1013,
+      'invdate': invdate ?? _formatInvDate(now),
+      'partyid': order.billToPartyId ?? '0',
+      'package_id': order.packageId ?? '1',
+      'remarks': order.orderRemarks ?? '',
+      'status': 1,
+      'employeeid': empId,
+      'localinvno': localinvno,
+      'deliverypoint': order.deliveryPointName ?? order.deliveryAddress ?? 'Direct to Party (Bilty)',
+      'isandroid': '1',
+      'delivery_party': order.shipToPartyId ?? '0',
+      'deal_id': order.paymentDealId ?? '0',
+      'goodsagency_id': order.goodsAgencyId ?? '0',
+      'uploaded': 'NO',
+      'created_at': now.toIso8601String(),
+    });
+
+    final createdAt = now.toIso8601String();
+    for (var i = 0; i < draft.items.length; i++) {
+      final item = draft.items[i];
+      await db.insert('booking_items', {
+        'booking_id': bookingId,
+        'item_id': item.itemId,
+        'item_name': item.itemName,
+        'quantity': item.quantity,
+        'unit_price': item.unitPrice,
+        'discount_percent': item.discountPercent,
+        'sort_order': i,
+        'created_at': createdAt,
+      });
+    }
+
+    return bookingId;
+  }
+
+  static String _formatInvDate(DateTime d) {
+    return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}:${d.second.toString().padLeft(2, '0')}';
+  }
+
+  /// Returns booking row by id (for upload).
+  Future<Map<String, dynamic>?> getBookingById(int bookingId) async {
+    final db = await _db;
+    final rows = await db.query(
+      'bookings',
+      where: 'id = ?',
+      whereArgs: [bookingId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Map<String, dynamic>.from(rows.first);
+  }
+
+  /// Returns booking row by draft_order_id.
+  Future<Map<String, dynamic>?> getBookingByDraftOrderId(int draftOrderId) async {
+    final db = await _db;
+    final rows = await db.query(
+      'bookings',
+      where: 'draft_order_id = ?',
+      whereArgs: [draftOrderId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Map<String, dynamic>.from(rows.first);
+  }
+
+  /// Returns all booking_items for a booking_id.
+  Future<List<Map<String, dynamic>>> getBookingItems(int bookingId) async {
+    final db = await _db;
+    final rows = await db.query(
+      'booking_items',
+      where: 'booking_id = ?',
+      whereArgs: [bookingId],
+      orderBy: 'sort_order ASC, id ASC',
+    );
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
+  /// Mark booking as uploaded (Android parity).
+  Future<void> markBookingUploaded(int bookingId) async {
+    final db = await _db;
+    final now = DateTime.now().toIso8601String();
+    await db.update(
+      'bookings',
+      {'uploaded': 'YES', 'uploaded_at': now},
+      where: 'id = ?',
+      whereArgs: [bookingId],
+    );
+  }
+
+  /// Returns bookings pending upload (uploaded != YES) for current employee.
+  Future<List<Map<String, dynamic>>> getPendingBookings() async {
+    final db = await _db;
+    final employeeId = await SessionService.getEmployeeId();
+    final empId = employeeId?.toString() ?? '';
+
+    final rows = await db.query(
+      'bookings',
+      where: "(uploaded IS NULL OR uploaded != 'YES') AND (employeeid = ? OR ? = '')",
+      whereArgs: [empId, empId],
+      orderBy: 'id ASC',
+    );
+
+    return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+  }
+
+  Future<int> getPendingBookingsCount() async {
+    final pending = await getPendingBookings();
+    return pending.length;
   }
 
   /// Returns all finalized orders for current user with their line items.

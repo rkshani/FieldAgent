@@ -84,6 +84,11 @@ class InvoiceProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void replaceItems(List<InvoiceItem> items) {
+    _invoice = _invoice.copyWith(items: [...items]);
+    notifyListeners();
+  }
+
   void reset() {
     _initializeInvoice();
     notifyListeners();

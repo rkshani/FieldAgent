@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'api_client.dart';
+import 'api_endpoints.dart';
 import 'local_db_service.dart';
 
 /// Refreshes goods agencies from API and saves to local cache.
@@ -16,9 +17,11 @@ class GoodsAgencyService {
   /// Returns true on success.
   Future<bool> refreshAndSave() async {
     try {
-      final url = ApiClient.instance.getTclOrderWebUrl(urlPath);
+      final url = ApiEndpoints.goodsAgency();
       final response = await ApiClient.instance.dio.get<String>(url);
-      if (response.statusCode == 200 && response.data != null && response.data!.trim().isNotEmpty) {
+      if (response.statusCode == 200 &&
+          response.data != null &&
+          response.data!.trim().isNotEmpty) {
         await LocalDbService.instance.saveLocalData(
           cacheKey: cacheKey,
           payload: response.data!,

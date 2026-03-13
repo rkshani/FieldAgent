@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/already_added_item.dart';
 import 'api_client.dart';
+import 'api_endpoints.dart';
 import 'local_db_service.dart';
 import 'session_service.dart';
 import 'order_data_normalizer.dart';
@@ -21,17 +22,13 @@ class AlreadyAddedItemService {
   Future<String> _buildUrl({String? orderId}) async {
     final employeeId = await SessionService.getEmployeeId();
     final uid = employeeId?.toString() ?? '';
-    final base = 'order_web_api_z.php?get_already_in_order_items=1&userid=$uid';
-    if (orderId != null && orderId.isNotEmpty)
-      return base + '&order_id=$orderId';
-    return base;
+    return ApiEndpoints.alreadyInOrderItems(uid, orderId: orderId);
   }
 
   /// Fetches already-in-order items and saves to cache.
   Future<bool> fetchAndSave({String? orderId}) async {
     try {
-      final path = await _buildUrl(orderId: orderId);
-      final url = ApiClient.instance.getTclOrderWebUrl(path);
+      final url = await _buildUrl(orderId: orderId);
       final response = await ApiClient.instance.dio.get<String>(url);
       if (response.statusCode == 200 &&
           response.data != null &&

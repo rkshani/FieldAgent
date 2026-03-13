@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/visit_route.dart';
 import 'api_client.dart';
+import 'api_endpoints.dart';
 import 'local_db_service.dart';
 import 'session_service.dart';
 
@@ -13,12 +14,6 @@ class VisitService {
   VisitService._();
 
   static final VisitService instance = VisitService._();
-
-  /// Android endpoint: /tclorder_apis/taj_api.php?getVisits=1&userid=
-  static const String agentApprovedVisitPath =
-      'tclorder_apis/taj_api.php?getVisits=1&userid=';
-  static const String visitedPartiesPath =
-      'tclorder_apis/taj_api.php?get_visited_parties=1&user_id=';
 
   static const String cacheKey = 'local_approved_visit';
   static const String routeCacheKey = 'local_route_data';
@@ -127,8 +122,7 @@ class VisitService {
 
       for (final id in ids) {
         try {
-          final url =
-              '${baseUrl.replaceAll(RegExp(r'/$'), '')}/$agentApprovedVisitPath$id';
+          final url = ApiEndpoints.agentApprovedVisit(baseUrl, id);
           debugPrint('[VisitService] GET visits url=$url');
           final response = await ApiClient.instance.dio.get<String>(url);
           debugPrint(
@@ -336,8 +330,12 @@ class VisitService {
 
       for (final id in ids) {
         try {
-          final url =
-              '${baseUrl.replaceAll(RegExp(r'/$'), '')}/$visitedPartiesPath$id&visitid=$visitId&routeid=$routeId';
+          final url = ApiEndpoints.visitedParties(
+            baseUrl,
+            userId: id,
+            visitId: visitId,
+            routeId: routeId,
+          );
           debugPrint('[VisitService] GET visited parties url=$url');
 
           final response = await ApiClient.instance.dio.get<String>(url);
