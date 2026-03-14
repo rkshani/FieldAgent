@@ -22,6 +22,7 @@ import '../services/order_package_pricing_service.dart';
 import '../utils/order_search_util.dart';
 import '../utils/order_upload_formatter.dart';
 import '../utils/package_eligibility_checker.dart';
+import 'orders_screen.dart';
 
 class OrderAddScreen extends StatefulWidget {
   const OrderAddScreen({super.key});
@@ -2121,7 +2122,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       await DraftOrderService.instance.createNewDraft();
       if (mounted) {
         await context.read<DraftOrderProvider>().loadDraft();
-        Navigator.pop(context);
+        _openMyOrdersScreen();
       }
       return;
     }
@@ -2149,10 +2150,11 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
       final now = DateTime.now();
       final invDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(now);
       final orderId = _currentOrderIdForUpload;
-        final employeeId = (await SessionService.getEmployeeId())?.toString() ??
+      final employeeId =
+          (await SessionService.getEmployeeId())?.toString() ??
           _userId.split('_').first;
-        final salesmanName = (await SessionService.getSavedUsername()) ??
-          'Salesman';
+      final salesmanName =
+          (await SessionService.getSavedUsername()) ?? 'Salesman';
 
       // Keep token values in the same spirit as old Android createJson.
       // Prefer IDs when present, otherwise use saved display names.
@@ -2382,9 +2384,9 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         }
 
         debugPrint(
-          '[OrderAdd] Calling Navigator.pop(context) to close Order Add screen',
+          '[OrderAdd] Opening My Orders screen after successful save/upload',
         );
-        if (mounted) Navigator.pop(context);
+        if (mounted) _openMyOrdersScreen();
         debugPrint('[OrderAdd] Upload flow completed successfully!');
       } else {
         debugPrint(
@@ -2412,6 +2414,12 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
         ),
       );
     }
+  }
+
+  void _openMyOrdersScreen() {
+    Navigator.of(
+      context,
+    ).pushReplacement(MaterialPageRoute(builder: (_) => const OrdersScreen()));
   }
 
   @override
@@ -3939,7 +3947,7 @@ class _OrderAddScreenState extends State<OrderAddScreen> {
                       Icon(Icons.save_outlined, size: 18),
                       SizedBox(width: 6),
                       Text(
-                        'SAVE OFFLINE',
+                        'SAVE',
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
